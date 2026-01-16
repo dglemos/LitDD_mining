@@ -1,0 +1,14 @@
+torch
+transformers
+datasets
+pyarrow
+polars
+pandas
+numpy
+pubmed_parser
+lxml
+requests
+sentence-transformers
+vllm
+evaluate
+scikit-learn
