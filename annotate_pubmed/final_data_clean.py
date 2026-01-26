@@ -14,10 +14,23 @@ all_df = all_df[all_df['llm_dis_map'].notna()]
 llm_final_df = all_df.reset_index(drop=True)
 
 # keep only tiab scoring/mapping on bert, crossencoder and LLM models
+def extract_score(item):
+    if isinstance(item, dict):
+        return item.get('score')
+    if isinstance(item, (list, tuple)) and len(item) >= 2:
+        return item[1]
+    try:
+        import pyarrow as pa
+        if isinstance(item, pa.Scalar):
+            return extract_score(item.as_py())
+    except Exception:
+        pass
+    return np.nan
+
 scores_max = (
     llm_final_df['top5_cross']
       .explode()
-      .apply(lambda d: d.get('score') if isinstance(d, dict) else np.nan)
+      .apply(extract_score)
       .groupby(level=0).max()
       .reindex(llm_final_df.index, fill_value=np.nan)
 )
@@ -55,7 +68,7 @@ agg = tmp.groupby('_idx', sort=False)['id_clean'].apply(lambda s: ';'.join(s))
 filtered_clean = filtered.loc[agg.index].copy()
 filtered_clean['llm_dis_map'] = agg
 
-filtered_clean['pmid'] = filtered_clean['pmid'].astype(int)
+filtered_clean['pmid'] = pd.to_numeric(filtered_clean['pmid'], errors='coerce').astype('Int64')
 
 # add pubtator gene mappings for tiab (uses GNorm2)
 # download gene2pubtator3 from https://ftp.ncbi.nlm.nih.gov/pub/lu/PubTator3/

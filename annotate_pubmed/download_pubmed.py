@@ -4,7 +4,7 @@ from lxml import html
 import requests
 
 def get_file_links(base_url):
-    response = requests.get(base_url)
+    response = requests.get(base_url, timeout=30)
     if response.status_code != 200:
         print(f"Failed to fetch data from {base_url}")
         return []
@@ -22,7 +22,9 @@ def download_files(file_links):
         # check if file already downloaded 
         if not os.path.exists(local_path):
             print(f"Downloading: {file_url}")
-            subprocess.call(['wget', '-P', download_dir, file_url])
+            result = subprocess.call(['wget', '-P', download_dir, file_url])
+            if result != 0:
+                print(f"Download failed with exit code {result}: {file_url}")
 
 home_dir = 'path_to_pubmed_download_dir'
 download_dir = os.path.join(home_dir, 'raw_download_files')
@@ -38,4 +40,3 @@ update_files = get_file_links(PUBMED_UPDATE)
 all_files = baseline_files + update_files
 
 download_files(all_files)
-

@@ -17,7 +17,8 @@ def process_file_to_parquet(xml_file, output_directory):
         docs = pp.parse_medline_xml(xml_file, year_info_only=False)
         docs_list = list(docs)
         df = pd.DataFrame(docs_list)
-        df['pubdate'] = [int(i.split('-')[0]) for i in df['pubdate']]
+        pub_year = df['pubdate'].astype(str).str.split('-').str[0]
+        df['pubdate'] = pd.to_numeric(pub_year, errors='coerce')
         df.to_parquet(output_file, engine='pyarrow', index=False)
         print(f"Saved {output_file}")
 
