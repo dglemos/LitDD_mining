@@ -1,6 +1,10 @@
+#!/usr/bin/env python3
+
+import argparse
 import os
 import pandas as pd
 from glob import glob
+from pathlib import Path
 import pubmed_parser as pp
 import traceback
 
@@ -32,12 +36,17 @@ def get_xml_files(directory):
     for xml_file in glob(os.path.join(directory, '*.xml.gz')):
         yield xml_file
 
-# Input and output directories
-download_dir = 'path_to_pubmed_download/raw_download_files'
-output_dir = 'path_to_pubmed_download/parquet_download_files'
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--download_dir", type=Path, required=True, help="Directory to raw download files")
+    ap.add_argument("--output_dir", type=Path, required=True, help="Output directory to parquet download files")
+    args = ap.parse_args()
 
-os.makedirs(output_dir, exist_ok=True)
-xml_files_generator = get_xml_files(download_dir)
+    os.makedirs(args.output_dir, exist_ok=True)
+    xml_files_generator = get_xml_files(args.download_dir)
 
-for xml_file in xml_files_generator:
-    process_file_to_parquet(xml_file, output_dir)
+    for xml_file in xml_files_generator:
+        process_file_to_parquet(xml_file, args.output_dir)
+
+if __name__ == "__main__":
+        main()

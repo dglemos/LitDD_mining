@@ -4,12 +4,14 @@ import gc
 import argparse
 import traceback
 from typing import Dict, Any, Optional, Tuple, List
+from pathlib import Path
 
 import torch
 import pyarrow as pa
 import pyarrow.parquet as pq
 from datasets import load_dataset
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
+
 
 # Enable TF32 matmul on Ampere/Hopper GPUs
 if torch.cuda.is_available():
@@ -19,12 +21,6 @@ if torch.cuda.is_available():
         torch.set_float32_matmul_precision('high')
         # Optional: also allow TF32 for convs 
         torch.backends.cudnn.allow_tf32 = True
-
-
-BERT_MODEL_PATH = "path_to_lit_dd_BERT"
-
-INPUT_DIR = "path_to_pubmed_download/parquet_download_files"
-PROCESSED_DIR = "bert_processed"
 
 ROW_BATCH_SIZE = 8192     # CPU-side batch (streaming)
 PRED_BATCH_SIZE = 32      # GPU batch size
@@ -37,9 +33,9 @@ def get_device(device_str: Optional[str] = None) -> str:
         return device_str
     return "cuda" if torch.cuda.is_available() else "cpu"
 
-def load_model_and_tokenizer(device_str: Optional[str] = None) -> Tuple[AutoTokenizer, AutoModelForSequenceClassification, str]:
-    tokenizer = AutoTokenizer.from_pretrained(BERT_MODEL_PATH, use_fast=True)
-    model = AutoModelForSequenceClassification.from_pretrained(BERT_MODEL_PATH)
+def load_model_and_tokenizer(bert_model: str, device_str: Optional[str] = None) -> Tuple[AutoTokenizer, AutoModelForSequenceClassification, str]:
+    tokenizer = AutoTokenizer.from_pretrained(bert_model, use_fast=True)
+    model = AutoModelForSequenceClassification.from_pretrained(bert_model)
     model.eval()
     device = get_device(device_str)
     model.to(device)
@@ -129,7 +125,7 @@ def table_from_batch_with_schema(batch: Dict[str, List[Any]], preds: List[int], 
 
 def process_one_parquet(
     parquet_path: str,
-    out_dir: str,
+    out_dir: Path,
     tokenizer,
     model,
     device: str,
@@ -225,14 +221,15 @@ def process_one_parquet(
     return True
 
 def process_all_parquets(
-    input_dir: str,
+    input_dir: Path,
     processed_dir: str,
+    bert_model: str,
     shard: int = 0,
     num_shards: int = 1,
     device: Optional[str] = None,
     fail_fast: bool = False,
 ):
-    tokenizer, model, device = load_model_and_tokenizer(device)
+    tokenizer, model, device = load_model_and_tokenizer(bert_model, device)
     files = sorted([os.path.join(input_dir, f) for f in os.listdir(input_dir) if f.endswith(".parquet")])
     if not files:
         print(f"No parquet files found in {input_dir}")
@@ -261,21 +258,26 @@ def process_all_parquets(
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
 
-def parse_args():
+def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--shard", type=int, default=0, help="Shard index for file list")
     ap.add_argument("--num_shards", type=int, default=1, help="Total number of shards")
     ap.add_argument("--device", type=str, default=None, help="Device string, e.g., cuda:0, cuda:1")
     ap.add_argument("--fail_fast", action="store_true", help="Stop on first error instead of skipping the parquet file")
-    return ap.parse_args()
+    ap.add_argument("--input_dir", type=Path, required=True, help="Directory containing the parquet files")
+    ap.add_argument("--processed_dir", type=Path, required=True, help="Directory for output files")
+    ap.add_argument("--bert_model", type=str, required=True, help="Directory to BERT model")
+    args = ap.parse_args()
 
-if __name__ == "__main__":
-    args = parse_args()
     process_all_parquets(
-        INPUT_DIR,
-        PROCESSED_DIR,
+        input_dir=args.input_dir,
+        processed_dir=args.processed_dir,
+        bert_model=args.bert_model,
         shard=args.shard,
         num_shards=args.num_shards,
         device=args.device,
         fail_fast=args.fail_fast,
     )
+
+if __name__ == "__main__":
+    main()
