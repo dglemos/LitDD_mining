@@ -3,8 +3,10 @@ import re
 import gc
 import glob
 import ast
+import json
 import argparse
 import pandas as pd
+import pyarrow as pa
 from vllm import LLM, SamplingParams
 import torch
 import numpy as np
@@ -13,67 +15,87 @@ import numpy as np
 def build_llm_prompt(tiab, candidate_lines):
     return (
             f"""System/Developer Instruction:
-        You are an expert in genetic disease, and mapping a title+abstract (TIAB) to one or more specific G2P LGMDE threads. You will receive:
+        You are an expert in genetic disease curation. Your task is to map a scientific Title+Abstract (TIAB) to one or more candidate G2P LGMDE threads.
+
+        You will receive:
         - A TIAB
-        - 5 candidate LGMDE threads (each line includes its G2P ID, gene(s), allelic requirement, inheritance, mechanism, evidence, disease name)
+        - Up to 5 candidate LGMDE threads (each line includes: G2P ID, gene, allelic requirement, inheritance, mechanism, evidence, disease name)
 
         Goal:
-        Return the G2P ID(s) from the provided candidates that best match the TIAB, or NO MATCH if none apply.
+        Select the best matching G2P ID(s) from the provided candidates, or return NO MATCH if none meet the required criteria.
 
-        Critical constraints:
-        - Only choose from the 5 candidates. Do not invent any other ID.
-        - Prefer selecting at least one candidate over NO MATCH unless the TIAB is clearly non-human only, describes somatic disease only, or references no overlapping gene(s) with the candidates.
-        - Output exactly one line in the specified schema and nothing else.
+        You must follow all rules below. Do not invent any G2P IDs. Only select from the 5 provided candidates.
 
-        Decision rubric (apply in this order):
-        1) Extract from the TIAB:
-        - Human evidence: Does it describe human patients (case(s), cohort)? 
-            - If only non-human models (mouse, zebrafish, cell lines) with no human patients, even if non-human model relates to a human disease, this is NO MATCH. 
-        - Type of disease: Germline disease only. If only somatic cancer described in the TIAB, this is NO MATCH, unless there is evidence this is part of a developmental syndrome. For example, genetic variants in hepatocellular cancer are likely to be somatic, even in human subjects. Alteratively mention of Juvenile Myelomonocytic Leukemia with Noonan syndrome is part of a wider syndromic developmental disorder.
-        - Type of study: If polymorphism or GWAS or genome-wide association study explictly mentioned, this is NO MATCH
-        - Gene(s): exact gene symbols and aliases. Ignore vague gene families unless the exact gene symbol is present.
-        - Inheritance/allelic clues: autosomal recessive/dominant, X-linked, biallelic, homozygous, compound heterozygous, de novo, heterozygous, multiplex families, consanguinity.
-        - Disease name(s) and synonyms.
-        - Key phenotypes (organ systems, hallmark features).
+        HARD FILTERING RULES (mandatory)
+        A candidate (and the overall TIAB) MUST satisfy ALL of the following or it is ineligible:
 
-        2) Candidate screening (must pass to be considered):
-        - Gene: TIAB must mention at least one gene that exactly matches a candidate gene (allow common aliases). If no gene overlap with any candidate, return NO MATCH.
-        - Human: TIAB must include human subjects or clear human diagnostic statements. If absent and only non-human, return NO MATCH.
-        - Disease type: TIAB must not describe somatic variation e.g. in cancer, or polymorphisms in GWAS for common diseases. 
-        - Negation: TIAB must not describe a negative association e.g. Variants in gene X do not cause disease Y. 
+        1) Gene overlap (mandatory)
+        - The TIAB must explicitly mention at least one gene symbol (or well-known alias) that exactly matches a gene in a candidate.
+        - If no candidate shares a gene with the TIAB, return NO MATCH.
 
-        3) Evidence scoring per candidate (use to rank):
-        - Gene match: required.
-        - Allelic requirement:
-            - If TIAB explicitly states zygosity/inheritance, it must be compatible with the candidate.
-            - If TIAB does not state zygosity/inheritance, do NOT reject the candidate; instead rely on disease name, inheritance words (if present), and phenotype overlap to disambiguate.
-            - If there are two candidate matches for a TIAB without zygosity/inheritance, choose the most common match. For example, if Marfan syndrome is mentioned it is much more likely to be the monoallelic form (common) than the biallelic form (very rare).
-        - Disease name/synonym: strong positive evidence if the TIAB mentions the same disease name or clear synonym (including eponyms).
-        - Phenotype: positive if hallmark/system-level features align (partial matches acceptable).
-            - If the phenotype does not match but the gene and allelic requirement clearly match, consider returning the matching candidate anyway, as this may indicate differences in disease-gene curation rather than the underlying molecular basis of disease.
-            - For example, PDHA1 may be PDHA1-related intellectual disability monoallelic_X_hemizygous or PDHA1-related pyruvate dehydrogenase E1-alpha deficiency monoallelic_X_heterozygous.
-            - In this case, if the tiab mentions PDHA1 variants in boys, it is more important that the gene and allelic requirement match than there is an exact match to the phenotype/disease name.
-        - Title emphasis: features in the title or opening sentence weigh more.
+        2) Human evidence (mandatory)
+        - The TIAB must include human subjects or explicit human diagnostic findings (for example: case reports, patient cohorts, family studies).
+        - If the TIAB contains only non-human models (animal models, cell lines, in vitro) with no human patients, return NO MATCH.
 
-        4) Selection:
-        - If exactly one candidate has a gene match and either:
-            a) explicit allelic requirement match, or
-            b) disease name/synonym match, or
-            c) ≥2 hallmark phenotypic features match,
-            return this candidate.
-        - If multiple candidates share the same gene:
-            - Use explicit allelic statements (if present) to disambiguate; else use disease name/synonyms; else use phenotype; else use inheritance words (AR/AD/X-linked); else prefer what the title emphasizes.
-        - If the TIAB clearly describes multiple matching diseases/genes among the candidates, return all matching IDs (semicolon-separated).
-        - Only return NO MATCH if:
-            - No gene overlap with any candidate, or
-            - The abstract is non-human only (no human patients), or
-            - The evidence is clearly incompatible (e.g., explicit dominant in TIAB vs strict biallelic candidate) for all candidates.
+        3) Disease type (mandatory)
+        - The TIAB must describe germline or inherited disease.
+        - If the TIAB describes only somatic variation (for example tumor sequencing, cancer-only studies) with no inherited or syndromic context, return NO MATCH.
 
-        Output schema (strict):
-        - Return exactly one line:
+        4) Study type exclusion
+        - If the TIAB is explicitly a GWAS, polymorphism association study, or common-variant risk study without rare pathogenic variant interpretation, return NO MATCH.
+
+        5) Negation exclusion
+        - If the TIAB explicitly states that variants in a gene do NOT cause a disease, that candidate is ineligible.
+
+        INFORMATION EXTRACTION (for ranking only)
+        From the TIAB, identify when present:
+        - Mentioned gene(s)
+        - Disease name(s) and synonyms
+        - Key phenotypes and affected systems
+        - Inheritance or allelic clues (dominant, recessive, X-linked, biallelic, heterozygous, de novo, consanguinity)
+        - Whether findings are emphasized in the title or opening sentence
+
+        CANDIDATE SCORING AND RANKING
+        For candidates that pass HARD FILTERING:
+        Score using the following priorities (highest to lowest):
+        1) Gene match (required for all candidates)
+
+        2) Allelic requirement compatibility
+        - If the TIAB explicitly states inheritance or zygosity, it must be compatible with the candidate.
+        - If inheritance or zygosity is NOT stated, do NOT reject candidates based on allelic requirement alone.
+
+        3) Disease name or clear synonym match
+        - Strong positive evidence when present.
+
+        4) Phenotype overlap
+        - Hallmark or system-level phenotype overlap is positive evidence.
+        - Partial matches are acceptable.
+
+        Important:
+        - If gene and allelic requirement clearly match but phenotype or disease naming differs, prefer the gene + allelic match. This may reflect differences in disease labeling rather than biology.
+
+        SELECTION RULES
+        1) Single best candidate:
+        Return exactly one G2P ID if only one candidate clearly ranks highest based on the scoring rules above.
+
+        2) Multiple candidates:
+        Return multiple G2P IDs (semicolon-separated) only if the TIAB clearly describes multiple distinct gene–disease associations that independently match separate candidates.
+
+        3) No match:
+        Return NO MATCH ONLY if:
+        - No candidate passes gene overlap filtering, OR
+        - The TIAB is non-human only, OR
+        - All candidates fail mandatory compatibility (for example: explicit dominant inheritance in TIAB versus strictly biallelic candidate).
+
+        Do NOT force a match if all candidates are incompatible.
+
+        OUTPUT FORMAT (STRICT)
+        Return exactly ONE line and NOTHING else:
         ANSWER: G2PID
-        or ANSWER: G2PID;G2PID
-        or ANSWER: NO MATCH
+        or
+        ANSWER: G2PID;G2PID
+        or
+        ANSWER: NO MATCH
 
     TIAB:
     {tiab}
@@ -103,6 +125,19 @@ def select_shards_for_worker(all_paths, shard_index, num_shards):
         return all_paths
     return [p for i, p in enumerate(all_paths) if (i % num_shards) == shard_index]
 
+def list_input_shards(shards_dir):
+    """
+    List only input shard parquets and exclude any LLM outputs written by this
+    script (which use the "__llm.parquet" suffix).
+    """
+    all_parquets = sorted(glob.glob(os.path.join(shards_dir, "*.parquet")))
+    input_parquets = [
+        p for p in all_parquets
+        if "__llm" not in os.path.basename(p)
+    ]
+    excluded = len(all_parquets) - len(input_parquets)
+    return input_parquets, excluded
+
 
 def run_llm_over_cross_shards(
     shards_dir,
@@ -131,6 +166,9 @@ def run_llm_over_cross_shards(
     os.makedirs(out_dir or shards_dir, exist_ok=True)
     out_dir = out_dir or shards_dir
 
+    if os.path.abspath(out_dir) == os.path.abspath(shards_dir):
+        print("[WARN] out_dir == shards_dir; input discovery will exclude __llm outputs.")
+
     # Initialize LLM once for all shards
     sampling_params = SamplingParams(temperature=temperature, top_p=top_p, max_tokens=max_tokens)
     llm_kwargs = {}
@@ -138,7 +176,9 @@ def run_llm_over_cross_shards(
         llm_kwargs["tensor_parallel_size"] = int(tensor_parallel_size)
     llm = LLM(model=llm_model, **llm_kwargs)
 
-    shard_paths = sorted(glob.glob(os.path.join(shards_dir, "*.parquet")))
+    shard_paths, excluded = list_input_shards(shards_dir)
+    if excluded:
+        print(f"[INFO] Excluding {excluded} __llm parquet(s) from input discovery.")
     shard_paths = select_shards_for_worker(shard_paths, shard_index, num_shards)
 
     print(f"Found {len(shard_paths)} parquet shard(s) for this worker.")
@@ -165,8 +205,7 @@ def run_llm_over_cross_shards(
 
                 # PyArrow scalars/structs -> convert to Python
                 try:
-                    import pyarrow as pa
-                    if isinstance(item, pa.Scalar):
+                    if pa is not None and isinstance(item, pa.Scalar):
                         item = item.as_py()
                         if isinstance(item, dict):
                             return str(item.get("label", "")).strip() or None
@@ -193,7 +232,6 @@ def run_llm_over_cross_shards(
 
             # If it’s a string, try JSON then literal_eval
             if isinstance(x, str):
-                import json, ast
                 obj = None
                 try:
                     obj = json.loads(x)
@@ -206,8 +244,7 @@ def run_llm_over_cross_shards(
 
             # PyArrow List/Struct scalars at the top level
             try:
-                import pyarrow as pa
-                if isinstance(x, pa.Scalar):
+                if pa is not None and isinstance(x, pa.Scalar):
                     return to_labels(x.as_py())
             except Exception:
                 pass
