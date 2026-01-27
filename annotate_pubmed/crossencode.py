@@ -232,7 +232,7 @@ def process_shard(
     input_parquet: str,
     g2p_csv: str,
     out_dir: str,
-    model_path: str = DEFAULT_MODEL_PATH,
+    model_path: str,
     device: Optional[str] = None,
     dtype: str = "auto",
     chunk_size: int = 256,          # bumped for A100
@@ -360,7 +360,7 @@ def process_shard(
     return True
 
 
-def parse_args():
+def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--input_parquet", type=Path, required=True, help="Path to input parquet file with a 'tiab' column")
     ap.add_argument("--g2p_csv", type=Path, required=True, help="Path to the G2P CSV")
@@ -377,8 +377,8 @@ def parse_args():
     ap.add_argument("--skip_if_exists", action="store_true", help="Skip if shard output already exists")
     ap.add_argument("--no_skip_if_exists", dest="skip_if_exists", action="store_false")
     ap.set_defaults(skip_if_exists=SKIP_IF_EXISTS)
-    ap.add_argument("--compression", type=str, default=PARQUET_COMPRESSION,
-                    help="Parquet compression (e.g., zstd, snappy)")
+    ap.add_argument("--compression", type=str, default=PARQUET_COMPRESSION, help="Parquet compression (e.g., zstd, snappy)")
+    args = ap.parse_args()
 
     ok = process_shard(
         input_parquet=args.input_parquet,
