@@ -14,7 +14,7 @@ import numpy as np
 
 def build_llm_prompt(tiab, candidate_structs):
     return (
-            f"""System/Developer Instruction:
+        f"""System/Developer Instruction:
         You are an expert in genetic disease curation. Your task is to map a scientific Title+Abstract (TIAB) to one or more candidate G2P LGMDE threads.
 
         You will receive:
@@ -84,14 +84,14 @@ def build_llm_prompt(tiab, candidate_structs):
 
         3) No match:
         Return NO MATCH ONLY if:
-        - No candidate passes gene overlap filtering, OR
-        - The TIAB is non-human only, OR
+        - No candidate passes gene overlap filtering, or
+        - The TIAB is non-human only, or
         - All candidates fail mandatory compatibility (for example: explicit dominant inheritance in TIAB versus strictly biallelic candidate).
 
         Do NOT force a match if all candidates are incompatible.
 
         OUTPUT FORMAT (STRICT)
-        Return exactly ONE line and NOTHING else:
+        Return exactly one line and nothing else:
         ANSWER: G2PID
         or
         ANSWER: G2PID;G2PID
@@ -103,13 +103,13 @@ def build_llm_prompt(tiab, candidate_structs):
 
     Candidate LGMDE Threads (structured):
     """
-            + "\n".join(candidate_structs)
-            + "\nReturn exactly one line in the schema above."
+        + "\n".join(candidate_structs)
+        + "\nReturn exactly one line in the schema above."
     )
 
 
 def extract_last_answer(text):
-    matches = re.findall(r'ANSWER:\s*(.*)', text or "")
+    matches = re.findall(r"ANSWER:\s*(.*)", text or "")
     return matches[-1].strip() if matches else None
 
 
@@ -141,7 +141,7 @@ def to_labels(x):
     # If it’s already a list/tuple/np.ndarray, iterate
     if isinstance(x, (list, tuple, np.ndarray)):
         labels = []
-        for it in (x.tolist() if isinstance(x, np.ndarray) else x):
+        for it in x.tolist() if isinstance(x, np.ndarray) else x:
             lab = extract_label_from_item(it)
             if lab:
                 labels.append(lab)
@@ -205,14 +205,14 @@ def format_candidate_structs(labels):
         if not data:
             continue
         line = (
-            f"{idx}) G2P_ID: {data.get('G2P_ID','')} | "
-            f"GENE: {data.get('GENE','')} | "
-            f"DISEASE: {data.get('DISEASE','')} | "
-            f"ALLELIC_REQUIREMENT: {data.get('ALLELIC_REQUIREMENT','')} | "
-            f"INHERITANCE: {data.get('CROSS_CUTTING_MODIFIER','')} | "
-            f"MECHANISM: {data.get('MOLECULAR_MECHANISM','')} | "
-            f"EVIDENCE: {data.get('CONFIDENCE','')} | "
-            f"VARIANT_TYPES: {data.get('VARIANT_TYPES','')}"
+            f"{idx}) G2P_ID: {data.get('G2P_ID', '')} | "
+            f"GENE: {data.get('GENE', '')} | "
+            f"DISEASE: {data.get('DISEASE', '')} | "
+            f"ALLELIC_REQUIREMENT: {data.get('ALLELIC_REQUIREMENT', '')} | "
+            f"INHERITANCE: {data.get('CROSS_CUTTING_MODIFIER', '')} | "
+            f"MECHANISM: {data.get('MOLECULAR_MECHANISM', '')} | "
+            f"EVIDENCE: {data.get('CONFIDENCE', '')} | "
+            f"VARIANT_TYPES: {data.get('VARIANT_TYPES', '')}"
         )
         structs.append(line)
     return structs
@@ -238,16 +238,14 @@ def select_shards_for_worker(all_paths, shard_index, num_shards):
         return all_paths
     return [p for i, p in enumerate(all_paths) if (i % num_shards) == shard_index]
 
+
 def list_input_shards(shards_dir):
     """
     List only input shard parquets and exclude any LLM outputs written by this
     script (which use the "__llm.parquet" suffix).
     """
     all_parquets = sorted(glob.glob(os.path.join(shards_dir, "*.parquet")))
-    input_parquets = [
-        p for p in all_parquets
-        if "__llm" not in os.path.basename(p)
-    ]
+    input_parquets = [p for p in all_parquets if "__llm" not in os.path.basename(p)]
     excluded = len(all_parquets) - len(input_parquets)
     return input_parquets, excluded
 
@@ -260,7 +258,7 @@ def run_llm_over_cross_shards(
     temperature=0.0,
     top_p=1.0,
     max_tokens=2048,
-    save_pickle=False,  
+    save_pickle=False,
     shard_index=None,
     num_shards=None,
     save_every=1000,
@@ -280,10 +278,14 @@ def run_llm_over_cross_shards(
     out_dir = out_dir or shards_dir
 
     if os.path.abspath(out_dir) == os.path.abspath(shards_dir):
-        print("[WARN] out_dir == shards_dir; input discovery will exclude __llm outputs.")
+        print(
+            "[WARN] out_dir == shards_dir; input discovery will exclude __llm outputs."
+        )
 
     # Initialize LLM once for all shards
-    sampling_params = SamplingParams(temperature=temperature, top_p=top_p, max_tokens=max_tokens)
+    sampling_params = SamplingParams(
+        temperature=temperature, top_p=top_p, max_tokens=max_tokens
+    )
     llm_kwargs = {}
     if tensor_parallel_size is not None:
         llm_kwargs["tensor_parallel_size"] = int(tensor_parallel_size)
@@ -303,7 +305,9 @@ def run_llm_over_cross_shards(
         df["top_5_cross_lgmde"] = df["top5_cross"].apply(to_labels)
 
         # Build prompts with structured candidate fields
-        df["candidate_structs"] = df["top_5_cross_lgmde"].apply(format_candidate_structs)
+        df["candidate_structs"] = df["top_5_cross_lgmde"].apply(
+            format_candidate_structs
+        )
         df["llm_prompt"] = df.apply(
             lambda row: build_llm_prompt(
                 tiab=row.get("tiab", ""),
@@ -326,7 +330,7 @@ def run_llm_over_cross_shards(
         # Process in chunks of save_every rows
         for chunk_start in range(0, N, save_every):
             chunk_end = min(chunk_start + save_every, N)
-            print(f"  Processing rows {chunk_start}..{chunk_end-1}")
+            print(f"  Processing rows {chunk_start}..{chunk_end - 1}")
 
             # Generate in vLLM batches over this chunk
             for b_start, b_end in batched_indices(chunk_start, chunk_end, batch_size):
