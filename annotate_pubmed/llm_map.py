@@ -12,14 +12,15 @@ import torch
 import numpy as np
 
 
-def build_llm_prompt(tiab, candidate_lines):
+def build_llm_prompt(tiab, candidate_structs):
     return (
             f"""System/Developer Instruction:
         You are an expert in genetic disease curation. Your task is to map a scientific Title+Abstract (TIAB) to one or more candidate G2P LGMDE threads.
 
         You will receive:
         - A TIAB
-        - Up to 5 candidate LGMDE threads (each line includes: G2P ID, gene, allelic requirement, inheritance, mechanism, evidence, disease name)
+        - Up to 5 candidate LGMDE threads, provided as structured fields:
+          G2P_ID, GENE, DISEASE, ALLELIC_REQUIREMENT, INHERITANCE, MECHANISM, EVIDENCE, VARIANT_TYPES, MOLECULAR_MECHANISM
 
         Goal:
         Select the best matching G2P ID(s) from the provided candidates, or return NO MATCH if none meet the required criteria.
@@ -30,7 +31,7 @@ def build_llm_prompt(tiab, candidate_lines):
         A candidate (and the overall TIAB) MUST satisfy ALL of the following or it is ineligible:
 
         1) Gene overlap (mandatory)
-        - The TIAB must explicitly mention at least one gene symbol (or well-known alias) that exactly matches a gene in a candidate.
+        - The TIAB must explicitly mention at least one gene symbol (or alias) that exactly matches a GENE field in a candidate.
         - If no candidate shares a gene with the TIAB, return NO MATCH.
 
         2) Human evidence (mandatory)
@@ -100,9 +101,9 @@ def build_llm_prompt(tiab, candidate_lines):
     TIAB:
     {tiab}
 
-    Candidate LGMDE Threads:
+    Candidate LGMDE Threads (structured):
     """
-            + "\n".join(f"{i+1}) {c}" for i, c in enumerate(candidate_lines))
+            + "\n".join(candidate_structs)
             + "\nReturn exactly one line in the schema above."
     )
 
@@ -110,6 +111,118 @@ def build_llm_prompt(tiab, candidate_lines):
 def extract_last_answer(text):
     matches = re.findall(r'ANSWER:\s*(.*)', text or "")
     return matches[-1].strip() if matches else None
+
+
+def extract_label_from_item(item):
+    if isinstance(item, dict):
+        return str(item.get("label", "")).strip() or None
+    if isinstance(item, (list, tuple)) and len(item) >= 1:
+        return str(item[0]).strip() or None
+    try:
+        if pa is not None and isinstance(item, pa.Scalar):
+            item = item.as_py()
+            if isinstance(item, dict):
+                return str(item.get("label", "")).strip() or None
+            if isinstance(item, (list, tuple)) and len(item) >= 1:
+                return str(item[0]).strip() or None
+    except Exception:
+        pass
+    if isinstance(item, str):
+        s = item.strip()
+        return s or None
+    return None
+
+
+def to_labels(x):
+    # Normalize None/NaN
+    if x is None or (isinstance(x, float) and pd.isna(x)):
+        return []
+
+    # If it’s already a list/tuple/np.ndarray, iterate
+    if isinstance(x, (list, tuple, np.ndarray)):
+        labels = []
+        for it in (x.tolist() if isinstance(x, np.ndarray) else x):
+            lab = extract_label_from_item(it)
+            if lab:
+                labels.append(lab)
+        return labels[:5]
+
+    # If it’s a string, try JSON then literal_eval
+    if isinstance(x, str):
+        obj = None
+        try:
+            obj = json.loads(x)
+        except Exception:
+            try:
+                obj = ast.literal_eval(x)
+            except Exception:
+                return []
+        return to_labels(obj)
+
+    # PyArrow List/Struct scalars at the top level
+    try:
+        if pa is not None and isinstance(x, pa.Scalar):
+            return to_labels(x.as_py())
+    except Exception:
+        pass
+
+    return []
+
+
+def parse_structured_candidate(label_str):
+    if not isinstance(label_str, str) or not label_str.strip():
+        return {}
+    parts = [p.strip() for p in label_str.split(" - ")]
+    keys = [
+        "G2P_ID",
+        "GENE",
+        "GENE_MIM",
+        "HGNC_ID",
+        "PREVIOUS_GENE_SYMBOLS",
+        "DISEASE",
+        "DISEASE_MIM",
+        "DISEASE_MONDO",
+        "ALLELIC_REQUIREMENT",
+        "CROSS_CUTTING_MODIFIER",
+        "CONFIDENCE",
+        "INFERRED_VARIANT_CONSEQUENCE",
+        "VARIANT_TYPES",
+        "MOLECULAR_MECHANISM",
+        "MOLECULAR_MECHANISM_CATEGORISATION",
+    ]
+    data = {}
+    for i, key in enumerate(keys):
+        data[key] = parts[i] if i < len(parts) else ""
+    return data
+
+
+def format_candidate_structs(labels):
+    if not labels:
+        return []
+    structs = []
+    for idx, label in enumerate(labels, start=1):
+        data = parse_structured_candidate(label)
+        if not data:
+            continue
+        line = (
+            f"{idx}) G2P_ID: {data.get('G2P_ID','')} | "
+            f"GENE: {data.get('GENE','')} | "
+            f"DISEASE: {data.get('DISEASE','')} | "
+            f"ALLELIC_REQUIREMENT: {data.get('ALLELIC_REQUIREMENT','')} | "
+            f"INHERITANCE: {data.get('CROSS_CUTTING_MODIFIER','')} | "
+            f"MECHANISM: {data.get('MOLECULAR_MECHANISM','')} | "
+            f"EVIDENCE: {data.get('CONFIDENCE','')} | "
+            f"VARIANT_TYPES: {data.get('VARIANT_TYPES','')}"
+        )
+        structs.append(line)
+    return structs
+
+
+def save_progress(df, generated_texts, out_parquet):
+    df["generated_text"] = generated_texts
+    df["llm_dis_map"] = [extract_last_answer(t) for t in generated_texts]
+    df.to_parquet(out_parquet, index=False)
+    print(f"[PROGRESS] Saved current progress to {out_parquet}")
 
 
 def batched_indices(start, end, batch_size):
@@ -187,79 +300,14 @@ def run_llm_over_cross_shards(
         print(f"Processing shard: {os.path.basename(shard_path)}")
         df = pd.read_parquet(shard_path)
 
-        # Normalize and create list of LGMDE strings (up to 5) for the prompt
-        def to_labels(x):
-            # Normalize None/NaN
-            if x is None or (isinstance(x, float) and pd.isna(x)):
-                return []
-
-            # Helper to normalize one item to a label string
-            def item_to_label(item):
-                # dict-like
-                if isinstance(item, dict):
-                    return str(item.get("label", "")).strip() or None
-
-                # tuple/list like (label, score)
-                if isinstance(item, (list, tuple)) and len(item) >= 1:
-                    return str(item[0]).strip() or None
-
-                # PyArrow scalars/structs -> convert to Python
-                try:
-                    if pa is not None and isinstance(item, pa.Scalar):
-                        item = item.as_py()
-                        if isinstance(item, dict):
-                            return str(item.get("label", "")).strip() or None
-                        if isinstance(item, (list, tuple)) and len(item) >= 1:
-                            return str(item[0]).strip() or None
-                except Exception:
-                    pass
-
-                # Fallback: plain string
-                if isinstance(item, str):
-                    s = item.strip()
-                    return s or None
-
-                return None
-
-            # If it’s already a list/tuple/np.ndarray, iterate
-            if isinstance(x, (list, tuple, np.ndarray)):
-                labels = []
-                for it in (x.tolist() if isinstance(x, np.ndarray) else x):
-                    lab = item_to_label(it)
-                    if lab:
-                        labels.append(lab)
-                return labels[:5]
-
-            # If it’s a string, try JSON then literal_eval
-            if isinstance(x, str):
-                obj = None
-                try:
-                    obj = json.loads(x)
-                except Exception:
-                    try:
-                        obj = ast.literal_eval(x)
-                    except Exception:
-                        return []
-                return to_labels(obj)
-
-            # PyArrow List/Struct scalars at the top level
-            try:
-                if pa is not None and isinstance(x, pa.Scalar):
-                    return to_labels(x.as_py())
-            except Exception:
-                pass
-
-            return []
-
-    
         df["top_5_cross_lgmde"] = df["top5_cross"].apply(to_labels)
 
-
-        # Build prompts
+        # Build prompts with structured candidate fields
+        df["candidate_structs"] = df["top_5_cross_lgmde"].apply(format_candidate_structs)
         df["llm_prompt"] = df.apply(
             lambda row: build_llm_prompt(
                 tiab=row.get("tiab", ""),
-                candidate_lines=row.get("top_5_cross_lgmde", []),
+                candidate_structs=row.get("candidate_structs", []),
             ),
             axis=1,
         )
@@ -275,13 +323,6 @@ def run_llm_over_cross_shards(
         base = os.path.splitext(os.path.basename(shard_path))[0]
         out_parquet = os.path.join(out_dir, f"{base}__llm.parquet")
 
-        # Helper: save (overwrite) current progress
-        def save_progress():
-            df["generated_text"] = generated_texts
-            df["llm_dis_map"] = [extract_last_answer(t) for t in generated_texts]
-            df.to_parquet(out_parquet, index=False)
-            print(f"[PROGRESS] Saved current progress to {out_parquet}")
-
         # Process in chunks of save_every rows
         for chunk_start in range(0, N, save_every):
             chunk_end = min(chunk_start + save_every, N)
@@ -295,7 +336,7 @@ def run_llm_over_cross_shards(
                     generated_texts[b_start + j] = out.outputs[0].text
 
             # Save after this chunk (overwrite file)
-            save_progress()
+            save_progress(df, generated_texts, out_parquet)
 
         print(f"[DONE] Shard completed: {os.path.basename(shard_path)}")
 
