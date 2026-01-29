@@ -100,8 +100,17 @@ python annotate_pubmed/llm_map.py \
 ```
 
 ### 7) Final cleaning and enrichment
+There are three requirements to run the final script:
+- G2P csv file
+- download gene2pubtator3 from https://ftp.ncbi.nlm.nih.gov/pub/lu/PubTator3/
+- download the ncbi gene ids from https://ftp.ncbi.nlm.nih.gov/gene/DATA/gene_info.gz
+
 ```bash
-python annotate_pubmed/final_data_clean.py
+python annotate_pubmed/final_data_clean.py \
+  --parquet_dir <path_to_llm_map_output_dir> \
+  --g2p_csv <path_to_G2P_file> \
+  --gene2pubtator3 <path_to_gene2pubtator3> \
+  --gene_info <path_to_ncbd_genes_file>
 ```
 
 ## Optional: model training helpers
