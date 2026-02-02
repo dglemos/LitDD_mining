@@ -1,6 +1,6 @@
 # LitDD Mining
 Pipeline to map PubMed literature to DD G2P disease threads and extract
-TIAB (title + abstract) mappings using BERT, a CrossEncoder, and an LLM.
+TIAB (title + abstract) mappings using BERT, a CrossEncoder and an LLM.
 
 ## Overview
 The workflow runs in stages:
@@ -19,84 +19,99 @@ The workflow runs in stages:
 
 Python dependencies (typical set):
 ```bash
-pip install torch transformers datasets pyarrow polars pandas numpy pubmed_parser lxml requests sentence-transformers vllm evaluate scikit-learn
+pip install -r requirements.txt
 ```
 
-## Setup
-Before running, update the placeholder paths in the scripts:
-- `path_to_pubmed_download_dir`
-- `path_to_pubmed_download/raw_download_files`
-- `path_to_pubmed_download/parquet_download_files`
-- `path_to_lit_dd_BERT`
-- `path_to_litdd_crossencoder`
-- `path_to_ddg2p_csv`
-- `path_to_gene_info`
+## Setup models
+To avoid failures while loading the model from huggingface,
+pre-download the models of your preference to a local directory.
 
-Search for `path_to_` in:
-- `annotate_pubmed/download_pubmed.py`
-- `annotate_pubmed/pubmed_to_parquet.py`
-- `annotate_pubmed/bert_predict.py`
-- `annotate_pubmed/crossencode.py`
-- `annotate_pubmed/llm_map.py`
-- `annotate_pubmed/final_data_clean.py`
+### BERT
+Model example: `tmy100000001/LitDD_BERT`
+```bash
+hf download tmy100000001/LitDD_BERT \
+  --local-dir <path_to_models> \
+  --cache-dir <path_to_models_cache>
+```
+
+### CrossEncoder
+Model example: `tmy100000001/LitDD_crossencoder`
+```bash
+hf download tmy100000001/LitDD_crossencoder \
+  --local-dir <path_to_models> \
+  --cache-dir <path_to_models_cache>
+```
+
+### LLM
+```bash
+hf download <model_name> \
+  --local-dir <path_to_models> \
+  --cache-dir <path_to_models_cache>
+```
 
 ## Run the pipeline
 
 ### 1) Download PubMed XML
-Edit `home_dir` in `annotate_pubmed/download_pubmed.py`, then run:
 ```bash
-python annotate_pubmed/download_pubmed.py
+python annotate_pubmed/download_pubmed.py --home_dir <path_to_pubmed_download_dir>
 ```
 Outputs to `path_to_pubmed_download_dir/raw_download_files`.
 
 ### 2) Convert XML to parquet
-Edit `download_dir` and `output_dir` in `annotate_pubmed/pubmed_to_parquet.py`, then run:
 ```bash
-python annotate_pubmed/pubmed_to_parquet.py
+python annotate_pubmed/pubmed_to_parquet.py --download_dir <path_to_pubmed_raw_download_dir> \
+--output_dir <path_to_pubmed_parquet_dir>
 ```
-Outputs to `path_to_pubmed_download/parquet_download_files`.
 
 ### 3) Run BERT prediction over parquet
-Edit `BERT_MODEL_PATH` and `INPUT_DIR` in `annotate_pubmed/bert_predict.py`, then run:
 ```bash
-python annotate_pubmed/bert_predict.py --device cuda:0
+python annotate_pubmed/bert_predict.py --input_dir <path_to_pubmed_parquet_dir> \
+--processed_dir <bert_processed_dir> \
+--bert_model <path_to_bert_model>
 ```
-Outputs to `bert_processed/` (or the path in `PROCESSED_DIR`).
+Outputs to `bert_processed_dir`
 
 ### 4) Build positives parquet
 ```bash
 python annotate_pubmed/build_bert_positives.py \
-  --processed_dir bert_processed \
+  --processed_dir <bert_processed_dir> \
   --out_path pubmed_bert_positive.parquet
 ```
+Outputs to file `pubmed_bert_positive.parquet`
 
 ### 5) Cross-encode against G2P
 ```bash
 python annotate_pubmed/crossencode.py \
   --input_parquet pubmed_bert_positive.parquet \
-  --g2p_csv /path/to/ddg2p.csv \
-  --model_path /path/to/litdd_crossencoder \
-  --out_dir crossencoded_shards \
+  --g2p_csv <path_to_ddg2p.csv> \
+  --model_path <path_to_litdd_crossencoder> \
+  --out_dir <path_to_crossencoded_shards> \
   --device cuda:0
 ```
 
 ### 6) LLM mapping
 ```bash
 python annotate_pubmed/llm_map.py \
-  --shards_dir crossencoded_shards \
-  --llm_model /path/to/llm \
-  --out_dir llm_shards \
-  --batch_size 32 \
-  --save_every 1000
+  --shards_dir <path_to_crossencoded_shards> \
+  --llm_model <path_to_llm> \
+  --out_dir <path_to_output_dir> \
+  --batch_size 32 --max_tokens 256 \
+  --temperature 0.0 --top_p 1.0
 ```
 
 ### 7) Final cleaning and enrichment
-Edit the input parquet paths and resource locations in
-`annotate_pubmed/final_data_clean.py`, then run:
+There are three requirements to run the final script:
+- G2P csv file
+- download gene2pubtator3 from https://ftp.ncbi.nlm.nih.gov/pub/lu/PubTator3/
+- download the ncbi gene ids from https://ftp.ncbi.nlm.nih.gov/gene/DATA/gene_info.gz
+
 ```bash
-python annotate_pubmed/final_data_clean.py
+python annotate_pubmed/final_data_clean.py \
+  --parquet_dir <path_to_llm_map_output_dir> \
+  --g2p_csv <path_to_G2P_file> \
+  --gene2pubtator3 <path_to_gene2pubtator3> \
+  --gene_info <path_to_ncbd_genes_file>
 ```
-Outputs `final_tiab_mappings.parquet`.
 
 ## Optional: model training helpers
 These scripts are for building and training the models used above:

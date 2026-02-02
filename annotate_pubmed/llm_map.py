@@ -3,91 +3,226 @@ import re
 import gc
 import glob
 import ast
+import json
 import argparse
 import pandas as pd
+import pyarrow as pa
 from vllm import LLM, SamplingParams
 import torch
 import numpy as np
 
 
-def build_llm_prompt(tiab, candidate_lines):
+def build_llm_prompt(tiab, candidate_structs):
     return (
-            f"""System/Developer Instruction:
-        You are an expert in genetic disease, and mapping a title+abstract (TIAB) to one or more specific G2P LGMDE threads. You will receive:
+        f"""System/Developer Instruction:
+        You are an expert in genetic disease curation. Your task is to map a scientific Title+Abstract (TIAB) to one or more candidate G2P LGMDE threads.
+
+        You will receive:
         - A TIAB
-        - 5 candidate LGMDE threads (each line includes its G2P ID, gene(s), allelic requirement, inheritance, mechanism, evidence, disease name)
+        - Up to 5 candidate LGMDE threads, provided as structured fields:
+          G2P_ID, GENE, DISEASE, ALLELIC_REQUIREMENT, INHERITANCE, MECHANISM, EVIDENCE, VARIANT_TYPES, MOLECULAR_MECHANISM
 
         Goal:
-        Return the G2P ID(s) from the provided candidates that best match the TIAB, or NO MATCH if none apply.
+        Select the best matching G2P ID(s) from the provided candidates, or return NO MATCH if none meet the required criteria.
 
-        Critical constraints:
-        - Only choose from the 5 candidates. Do not invent any other ID.
-        - Prefer selecting at least one candidate over NO MATCH unless the TIAB is clearly non-human only, describes somatic disease only, or references no overlapping gene(s) with the candidates.
-        - Output exactly one line in the specified schema and nothing else.
+        You must follow all rules below. Do not invent any G2P IDs. Only select from the 5 provided candidates.
 
-        Decision rubric (apply in this order):
-        1) Extract from the TIAB:
-        - Human evidence: Does it describe human patients (case(s), cohort)? 
-            - If only non-human models (mouse, zebrafish, cell lines) with no human patients, even if non-human model relates to a human disease, this is NO MATCH. 
-        - Type of disease: Germline disease only. If only somatic cancer described in the TIAB, this is NO MATCH, unless there is evidence this is part of a developmental syndrome. For example, genetic variants in hepatocellular cancer are likely to be somatic, even in human subjects. Alteratively mention of Juvenile Myelomonocytic Leukemia with Noonan syndrome is part of a wider syndromic developmental disorder.
-        - Type of study: If polymorphism or GWAS or genome-wide association study explictly mentioned, this is NO MATCH
-        - Gene(s): exact gene symbols and aliases. Ignore vague gene families unless the exact gene symbol is present.
-        - Inheritance/allelic clues: autosomal recessive/dominant, X-linked, biallelic, homozygous, compound heterozygous, de novo, heterozygous, multiplex families, consanguinity.
-        - Disease name(s) and synonyms.
-        - Key phenotypes (organ systems, hallmark features).
+        HARD FILTERING RULES (mandatory)
+        A candidate (and the overall TIAB) MUST satisfy ALL of the following or it is ineligible:
 
-        2) Candidate screening (must pass to be considered):
-        - Gene: TIAB must mention at least one gene that exactly matches a candidate gene (allow common aliases). If no gene overlap with any candidate, return NO MATCH.
-        - Human: TIAB must include human subjects or clear human diagnostic statements. If absent and only non-human, return NO MATCH.
-        - Disease type: TIAB must not describe somatic variation e.g. in cancer, or polymorphisms in GWAS for common diseases. 
-        - Negation: TIAB must not describe a negative association e.g. Variants in gene X do not cause disease Y. 
+        1) Gene overlap (mandatory)
+        - The TIAB must explicitly mention at least one gene symbol (or alias) that exactly matches a GENE field in a candidate.
+        - If no candidate shares a gene with the TIAB, return NO MATCH.
 
-        3) Evidence scoring per candidate (use to rank):
-        - Gene match: required.
-        - Allelic requirement:
-            - If TIAB explicitly states zygosity/inheritance, it must be compatible with the candidate.
-            - If TIAB does not state zygosity/inheritance, do NOT reject the candidate; instead rely on disease name, inheritance words (if present), and phenotype overlap to disambiguate.
-            - If there are two candidate matches for a TIAB without zygosity/inheritance, choose the most common match. For example, if Marfan syndrome is mentioned it is much more likely to be the monoallelic form (common) than the biallelic form (very rare).
-        - Disease name/synonym: strong positive evidence if the TIAB mentions the same disease name or clear synonym (including eponyms).
-        - Phenotype: positive if hallmark/system-level features align (partial matches acceptable).
-            - If the phenotype does not match but the gene and allelic requirement clearly match, consider returning the matching candidate anyway, as this may indicate differences in disease-gene curation rather than the underlying molecular basis of disease.
-            - For example, PDHA1 may be PDHA1-related intellectual disability monoallelic_X_hemizygous or PDHA1-related pyruvate dehydrogenase E1-alpha deficiency monoallelic_X_heterozygous.
-            - In this case, if the tiab mentions PDHA1 variants in boys, it is more important that the gene and allelic requirement match than there is an exact match to the phenotype/disease name.
-        - Title emphasis: features in the title or opening sentence weigh more.
+        2) Human evidence (mandatory)
+        - The TIAB must include human subjects or explicit human diagnostic findings (for example: case reports, patient cohorts, family studies).
+        - If the TIAB contains only non-human models (animal models, cell lines, in vitro) with no human patients, return NO MATCH.
 
-        4) Selection:
-        - If exactly one candidate has a gene match and either:
-            a) explicit allelic requirement match, or
-            b) disease name/synonym match, or
-            c) ≥2 hallmark phenotypic features match,
-            return this candidate.
-        - If multiple candidates share the same gene:
-            - Use explicit allelic statements (if present) to disambiguate; else use disease name/synonyms; else use phenotype; else use inheritance words (AR/AD/X-linked); else prefer what the title emphasizes.
-        - If the TIAB clearly describes multiple matching diseases/genes among the candidates, return all matching IDs (semicolon-separated).
-        - Only return NO MATCH if:
-            - No gene overlap with any candidate, or
-            - The abstract is non-human only (no human patients), or
-            - The evidence is clearly incompatible (e.g., explicit dominant in TIAB vs strict biallelic candidate) for all candidates.
+        3) Disease type (mandatory)
+        - The TIAB must describe germline or inherited disease.
+        - If the TIAB describes only somatic variation (for example tumor sequencing, cancer-only studies) with no inherited or syndromic context, return NO MATCH.
 
-        Output schema (strict):
-        - Return exactly one line:
+        4) Study type exclusion
+        - If the TIAB is explicitly a GWAS, polymorphism association study, or common-variant risk study without rare pathogenic variant interpretation, return NO MATCH.
+
+        5) Negation exclusion
+        - If the TIAB explicitly states that variants in a gene do NOT cause a disease, that candidate is ineligible.
+
+        INFORMATION EXTRACTION (for ranking only)
+        From the TIAB, identify when present:
+        - Mentioned gene(s)
+        - Disease name(s) and synonyms
+        - Key phenotypes and affected systems
+        - Inheritance or allelic clues (dominant, recessive, X-linked, biallelic, heterozygous, de novo, consanguinity)
+        - Whether findings are emphasized in the title or opening sentence
+
+        CANDIDATE SCORING AND RANKING
+        For candidates that pass HARD FILTERING:
+        Score using the following priorities (highest to lowest):
+        1) Gene match (required for all candidates)
+
+        2) Allelic requirement compatibility
+        - If the TIAB explicitly states inheritance or zygosity, it must be compatible with the candidate.
+        - If inheritance or zygosity is NOT stated, do NOT reject candidates based on allelic requirement alone.
+
+        3) Disease name or clear synonym match
+        - Strong positive evidence when present.
+
+        4) Phenotype overlap
+        - Hallmark or system-level phenotype overlap is positive evidence.
+        - Partial matches are acceptable.
+
+        Important:
+        - If gene and allelic requirement clearly match but phenotype or disease naming differs, prefer the gene + allelic match. This may reflect differences in disease labeling rather than biology.
+
+        SELECTION RULES
+        1) Single best candidate:
+        Return exactly one G2P ID if only one candidate clearly ranks highest based on the scoring rules above.
+
+        2) Multiple candidates:
+        Return multiple G2P IDs (semicolon-separated) only if the TIAB clearly describes multiple distinct gene–disease associations that independently match separate candidates.
+
+        3) No match:
+        Return NO MATCH ONLY if:
+        - No candidate passes gene overlap filtering, or
+        - The TIAB is non-human only, or
+        - All candidates fail mandatory compatibility (for example: explicit dominant inheritance in TIAB versus strictly biallelic candidate).
+
+        Do NOT force a match if all candidates are incompatible.
+
+        OUTPUT FORMAT (STRICT)
+        Return exactly one line and nothing else:
         ANSWER: G2PID
-        or ANSWER: G2PID;G2PID
-        or ANSWER: NO MATCH
+        or
+        ANSWER: G2PID;G2PID
+        or
+        ANSWER: NO MATCH
 
     TIAB:
     {tiab}
 
-    Candidate LGMDE Threads:
+    Candidate LGMDE Threads (structured):
     """
-            + "\n".join(f"{i+1}) {c}" for i, c in enumerate(candidate_lines))
-            + "\nReturn exactly one line in the schema above."
+        + "\n".join(candidate_structs)
+        + "\nReturn exactly one line in the schema above."
     )
 
 
 def extract_last_answer(text):
-    matches = re.findall(r'ANSWER:\s*(.*)', text or "")
+    matches = re.findall(r"ANSWER:\s*(.*)", text or "")
     return matches[-1].strip() if matches else None
+
+
+def extract_label_from_item(item):
+    if isinstance(item, dict):
+        return str(item.get("label", "")).strip() or None
+    if isinstance(item, (list, tuple)) and len(item) >= 1:
+        return str(item[0]).strip() or None
+    try:
+        if pa is not None and isinstance(item, pa.Scalar):
+            item = item.as_py()
+            if isinstance(item, dict):
+                return str(item.get("label", "")).strip() or None
+            if isinstance(item, (list, tuple)) and len(item) >= 1:
+                return str(item[0]).strip() or None
+    except Exception:
+        pass
+    if isinstance(item, str):
+        s = item.strip()
+        return s or None
+    return None
+
+
+def to_labels(x):
+    # Normalize None/NaN
+    if x is None or (isinstance(x, float) and pd.isna(x)):
+        return []
+
+    # If it’s already a list/tuple/np.ndarray, iterate
+    if isinstance(x, (list, tuple, np.ndarray)):
+        labels = []
+        for it in x.tolist() if isinstance(x, np.ndarray) else x:
+            lab = extract_label_from_item(it)
+            if lab:
+                labels.append(lab)
+        return labels[:5]
+
+    # If it’s a string, try JSON then literal_eval
+    if isinstance(x, str):
+        obj = None
+        try:
+            obj = json.loads(x)
+        except Exception:
+            try:
+                obj = ast.literal_eval(x)
+            except Exception:
+                return []
+        return to_labels(obj)
+
+    # PyArrow List/Struct scalars at the top level
+    try:
+        if pa is not None and isinstance(x, pa.Scalar):
+            return to_labels(x.as_py())
+    except Exception:
+        pass
+
+    return []
+
+
+def parse_structured_candidate(label_str):
+    if not isinstance(label_str, str) or not label_str.strip():
+        return {}
+    parts = [p.strip() for p in label_str.split(" - ")]
+    keys = [
+        "G2P_ID",
+        "GENE",
+        "GENE_MIM",
+        "HGNC_ID",
+        "PREVIOUS_GENE_SYMBOLS",
+        "DISEASE",
+        "DISEASE_MIM",
+        "DISEASE_MONDO",
+        "ALLELIC_REQUIREMENT",
+        "CROSS_CUTTING_MODIFIER",
+        "CONFIDENCE",
+        "INFERRED_VARIANT_CONSEQUENCE",
+        "VARIANT_TYPES",
+        "MOLECULAR_MECHANISM",
+        "MOLECULAR_MECHANISM_CATEGORISATION",
+    ]
+    data = {}
+    for i, key in enumerate(keys):
+        data[key] = parts[i] if i < len(parts) else ""
+    return data
+
+
+def format_candidate_structs(labels):
+    if not labels:
+        return []
+    structs = []
+    for idx, label in enumerate(labels, start=1):
+        data = parse_structured_candidate(label)
+        if not data:
+            continue
+        line = (
+            f"{idx}) G2P_ID: {data.get('G2P_ID', '')} | "
+            f"GENE: {data.get('GENE', '')} | "
+            f"DISEASE: {data.get('DISEASE', '')} | "
+            f"ALLELIC_REQUIREMENT: {data.get('ALLELIC_REQUIREMENT', '')} | "
+            f"INHERITANCE: {data.get('CROSS_CUTTING_MODIFIER', '')} | "
+            f"MECHANISM: {data.get('MOLECULAR_MECHANISM', '')} | "
+            f"EVIDENCE: {data.get('CONFIDENCE', '')} | "
+            f"VARIANT_TYPES: {data.get('VARIANT_TYPES', '')}"
+        )
+        structs.append(line)
+    return structs
+
+
+def save_progress(df, generated_texts, out_parquet):
+    df["generated_text"] = generated_texts
+    df["llm_dis_map"] = [extract_last_answer(t) for t in generated_texts]
+    df.to_parquet(out_parquet, index=False)
+    print(f"[PROGRESS] Saved current progress to {out_parquet}")
 
 
 def batched_indices(start, end, batch_size):
@@ -104,6 +239,17 @@ def select_shards_for_worker(all_paths, shard_index, num_shards):
     return [p for i, p in enumerate(all_paths) if (i % num_shards) == shard_index]
 
 
+def list_input_shards(shards_dir):
+    """
+    List only input shard parquets and exclude any LLM outputs written by this
+    script (which use the "__llm.parquet" suffix).
+    """
+    all_parquets = sorted(glob.glob(os.path.join(shards_dir, "*.parquet")))
+    input_parquets = [p for p in all_parquets if "__llm" not in os.path.basename(p)]
+    excluded = len(all_parquets) - len(input_parquets)
+    return input_parquets, excluded
+
+
 def run_llm_over_cross_shards(
     shards_dir,
     llm_model,
@@ -112,7 +258,7 @@ def run_llm_over_cross_shards(
     temperature=0.0,
     top_p=1.0,
     max_tokens=2048,
-    save_pickle=False,  
+    save_pickle=False,
     shard_index=None,
     num_shards=None,
     save_every=1000,
@@ -131,14 +277,23 @@ def run_llm_over_cross_shards(
     os.makedirs(out_dir or shards_dir, exist_ok=True)
     out_dir = out_dir or shards_dir
 
+    if os.path.abspath(out_dir) == os.path.abspath(shards_dir):
+        print(
+            "[WARN] out_dir == shards_dir; input discovery will exclude __llm outputs."
+        )
+
     # Initialize LLM once for all shards
-    sampling_params = SamplingParams(temperature=temperature, top_p=top_p, max_tokens=max_tokens)
+    sampling_params = SamplingParams(
+        temperature=temperature, top_p=top_p, max_tokens=max_tokens
+    )
     llm_kwargs = {}
     if tensor_parallel_size is not None:
         llm_kwargs["tensor_parallel_size"] = int(tensor_parallel_size)
     llm = LLM(model=llm_model, **llm_kwargs)
 
-    shard_paths = sorted(glob.glob(os.path.join(shards_dir, "*.parquet")))
+    shard_paths, excluded = list_input_shards(shards_dir)
+    if excluded:
+        print(f"[INFO] Excluding {excluded} __llm parquet(s) from input discovery.")
     shard_paths = select_shards_for_worker(shard_paths, shard_index, num_shards)
 
     print(f"Found {len(shard_paths)} parquet shard(s) for this worker.")
@@ -147,82 +302,16 @@ def run_llm_over_cross_shards(
         print(f"Processing shard: {os.path.basename(shard_path)}")
         df = pd.read_parquet(shard_path)
 
-        # Normalize and create list of LGMDE strings (up to 5) for the prompt
-        def to_labels(x):
-            # Normalize None/NaN
-            if x is None or (isinstance(x, float) and pd.isna(x)):
-                return []
-
-            # Helper to normalize one item to a label string
-            def item_to_label(item):
-                # dict-like
-                if isinstance(item, dict):
-                    return str(item.get("label", "")).strip() or None
-
-                # tuple/list like (label, score)
-                if isinstance(item, (list, tuple)) and len(item) >= 1:
-                    return str(item[0]).strip() or None
-
-                # PyArrow scalars/structs -> convert to Python
-                try:
-                    import pyarrow as pa
-                    if isinstance(item, pa.Scalar):
-                        item = item.as_py()
-                        if isinstance(item, dict):
-                            return str(item.get("label", "")).strip() or None
-                        if isinstance(item, (list, tuple)) and len(item) >= 1:
-                            return str(item[0]).strip() or None
-                except Exception:
-                    pass
-
-                # Fallback: plain string
-                if isinstance(item, str):
-                    s = item.strip()
-                    return s or None
-
-                return None
-
-            # If it’s already a list/tuple/np.ndarray, iterate
-            if isinstance(x, (list, tuple, np.ndarray)):
-                labels = []
-                for it in (x.tolist() if isinstance(x, np.ndarray) else x):
-                    lab = item_to_label(it)
-                    if lab:
-                        labels.append(lab)
-                return labels[:5]
-
-            # If it’s a string, try JSON then literal_eval
-            if isinstance(x, str):
-                import json, ast
-                obj = None
-                try:
-                    obj = json.loads(x)
-                except Exception:
-                    try:
-                        obj = ast.literal_eval(x)
-                    except Exception:
-                        return []
-                return to_labels(obj)
-
-            # PyArrow List/Struct scalars at the top level
-            try:
-                import pyarrow as pa
-                if isinstance(x, pa.Scalar):
-                    return to_labels(x.as_py())
-            except Exception:
-                pass
-
-            return []
-
-    
         df["top_5_cross_lgmde"] = df["top5_cross"].apply(to_labels)
 
-
-        # Build prompts
+        # Build prompts with structured candidate fields
+        df["candidate_structs"] = df["top_5_cross_lgmde"].apply(
+            format_candidate_structs
+        )
         df["llm_prompt"] = df.apply(
             lambda row: build_llm_prompt(
                 tiab=row.get("tiab", ""),
-                candidate_lines=row.get("top_5_cross_lgmde", []),
+                candidate_structs=row.get("candidate_structs", []),
             ),
             axis=1,
         )
@@ -238,17 +327,10 @@ def run_llm_over_cross_shards(
         base = os.path.splitext(os.path.basename(shard_path))[0]
         out_parquet = os.path.join(out_dir, f"{base}__llm.parquet")
 
-        # Helper: save (overwrite) current progress
-        def save_progress():
-            df["generated_text"] = generated_texts
-            df["llm_dis_map"] = [extract_last_answer(t) for t in generated_texts]
-            df.to_parquet(out_parquet, index=False)
-            print(f"[PROGRESS] Saved current progress to {out_parquet}")
-
         # Process in chunks of save_every rows
         for chunk_start in range(0, N, save_every):
             chunk_end = min(chunk_start + save_every, N)
-            print(f"  Processing rows {chunk_start}..{chunk_end-1}")
+            print(f"  Processing rows {chunk_start}..{chunk_end - 1}")
 
             # Generate in vLLM batches over this chunk
             for b_start, b_end in batched_indices(chunk_start, chunk_end, batch_size):
@@ -258,7 +340,7 @@ def run_llm_over_cross_shards(
                     generated_texts[b_start + j] = out.outputs[0].text
 
             # Save after this chunk (overwrite file)
-            save_progress()
+            save_progress(df, generated_texts, out_parquet)
 
         print(f"[DONE] Shard completed: {os.path.basename(shard_path)}")
 
