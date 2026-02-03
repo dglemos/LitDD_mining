@@ -90,6 +90,12 @@ def main():
         default=Path("final_tiab_mappings.parquet"),
         help="Output parquet path",
     )
+    parser.add_argument(
+        "--score_cutoff",
+        type=float,
+        default=0.9,
+        help="Minimum top5_cross score to keep a row",
+    )
     args = parser.parse_args()
 
     all_df = load_parquets_from_dir(str(args.parquet_dir))
@@ -108,7 +114,7 @@ def main():
     filtered = llm_final_df.loc[
         llm_final_df["llm_dis_map"].notna()
         & (llm_final_df["llm_dis_map"].str.startswith("G2P"))
-        & scores_max.ge(0.9).fillna(False)
+        & scores_max.ge(args.score_cutoff).fillna(False)
     ]
 
     # make sure mappings are to true G2P IDs, i.e. no hallucinations

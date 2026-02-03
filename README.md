@@ -98,6 +98,8 @@ python annotate_pubmed/llm_map.py \
   --batch_size 32 --max_tokens 256 \
   --temperature 0.0 --top_p 1.0
 ```
+Rows are pre-filtered before LLM mapping by the cross-encoder score in `top5_cross`
+(current cutoff: 0.01 in `llm_map.py`).
 
 ### 7) Final cleaning and enrichment
 There are three requirements to run the final script:
@@ -110,8 +112,10 @@ python annotate_pubmed/final_data_clean.py \
   --parquet_dir <path_to_llm_map_output_dir> \
   --g2p_csv <path_to_G2P_file> \
   --gene2pubtator3 <path_to_gene2pubtator3> \
-  --gene_info <path_to_ncbd_genes_file>
+  --gene_info <path_to_ncbd_genes_file> \
+  --score_cutoff 0.9
 ```
+`--score_cutoff` filters rows by the cross-encoder score in `top5_cross` (default: 0.9).
 
 ## Optional: model training helpers
 These scripts are for building and training the models used above:

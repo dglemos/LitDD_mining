@@ -133,6 +133,19 @@ def extract_label_from_item(item):
     return None
 
 
+def extract_score(item):
+    if isinstance(item, dict):
+        return item.get("score")
+    if isinstance(item, (list, tuple)) and len(item) >= 2:
+        return item[1]
+    try:
+        if pa is not None and isinstance(item, pa.Scalar):
+            return extract_score(item.as_py())
+    except Exception:
+        pass
+    return np.nan
+
+
 def to_labels(x):
     # Normalize None/NaN
     if x is None or (isinstance(x, float) and pd.isna(x)):
@@ -301,6 +314,15 @@ def run_llm_over_cross_shards(
     for shard_path in shard_paths:
         print(f"Processing shard: {os.path.basename(shard_path)}")
         df = pd.read_parquet(shard_path)
+        scores_max = (
+            df["top5_cross"]
+            .explode()
+            .apply(extract_score)
+            .groupby(level=0)
+            .max()
+            .reindex(df.index, fill_value=np.nan)
+        )
+        df = df.loc[scores_max.ge(0.01).fillna(False)].copy()
 
         df["top_5_cross_lgmde"] = df["top5_cross"].apply(to_labels)
 
