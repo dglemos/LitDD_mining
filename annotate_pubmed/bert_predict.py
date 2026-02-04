@@ -164,6 +164,19 @@ def table_from_batch_with_schema(
     return table
 
 
+def rows_to_batch(rows: List[Dict[str, Any]], schema: pa.Schema) -> Dict[str, List[Any]]:
+    """Convert row-wise examples into a columnar batch aligned with output schema."""
+    names = [field.name for field in schema if field.name != "bert_predict"]
+    batch = {name: [] for name in names}
+    for row in rows:
+        for name in names:
+            if name == "tiab":
+                batch[name].append(row.get("tiab", ""))
+            else:
+                batch[name].append(row.get(name, None))
+    return batch
+
+
 def process_one_parquet(
     parquet_path: str,
     out_dir: Path,
@@ -184,13 +197,6 @@ def process_one_parquet(
         ds = load_dataset(
             "parquet", data_files=parquet_path, split="train", streaming=True
         )
-        # Filter by pubdate > 1980 and English language
-        ds = ds.filter(safe_pubdate_gt_1980)
-        # Filter to only publications with abstracts
-        ds = ds.filter(has_abstract)
-        # Create 'tiab' field (title + abstract)
-        ds = ds.map(make_tiab)
-        ds = ds.batch(ROW_BATCH_SIZE)
     except Exception:
         print(f"[ERROR] Failed to open or prepare dataset for: {parquet_path}")
         traceback.print_exc()
@@ -208,29 +214,50 @@ def process_one_parquet(
     file_failed = False
 
     try:
-        for batch in ds:
-            try:
-                texts = batch.get("tiab", [])
-                if not texts:
-                    continue
-                preds = predict_batch(tokenizer, model, device, texts)
-                table = table_from_batch_with_schema(batch, preds, out_schema)
-                if writer is None:
-                    writer = pq.ParquetWriter(
-                        out_path, schema=out_schema, compression=PARQUET_COMPRESSION
-                    )
-                writer.write_table(table)
-                total_rows += table.num_rows
+        row_buffer: List[Dict[str, Any]] = []
 
-                del batch, table, preds, texts
+        def flush_buffer(rows: List[Dict[str, Any]]):
+            nonlocal writer, total_rows
+            if not rows:
+                return
+            batch = rows_to_batch(rows, out_schema)
+            texts = batch.get("tiab", [])
+            if not texts:
+                return
+            preds = predict_batch(tokenizer, model, device, texts)
+            table = table_from_batch_with_schema(batch, preds, out_schema)
+            if writer is None:
+                writer = pq.ParquetWriter(
+                    out_path, schema=out_schema, compression=PARQUET_COMPRESSION
+                )
+            writer.write_table(table)
+            total_rows += table.num_rows
+
+            del batch, table, preds, texts
+
+        for row in ds:
+            try:
+                if not safe_pubdate_gt_1980(row):
+                    continue
+                if not has_abstract(row):
+                    continue
+                row_buffer.append(make_tiab(dict(row)))
+                if len(row_buffer) >= ROW_BATCH_SIZE:
+                    flush_buffer(row_buffer)
+                    row_buffer.clear()
+
                 gc.collect()
                 if device.startswith("cuda"):
                     torch.cuda.empty_cache()
             except Exception:
                 file_failed = True
-                print(f"[ERROR] Failed processing a batch in: {parquet_path}")
+                print(f"[ERROR] Failed processing a row batch in: {parquet_path}")
                 traceback.print_exc()
                 break
+
+        if not file_failed:
+            flush_buffer(row_buffer)
+            row_buffer.clear()
     except Exception:
         file_failed = True
         print(f"[ERROR] Iteration over dataset failed for: {parquet_path}")
