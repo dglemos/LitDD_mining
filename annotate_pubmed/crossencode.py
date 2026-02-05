@@ -1,4 +1,15 @@
 #!/usr/bin/env python3
+
+"""
+Script to:
+    - cross-encode PubMed `tiab` text against G2P entries using a
+    SentenceTransformers CrossEncoder
+    - keep the top-5 G2P matches per row
+    - write shard-level parquet outputs with a structured `top5_cross` column
+It should be run on a GPU for best performance and is designed to be shardable
+across multiple processes.
+"""
+
 import os
 import gc
 import argparse
