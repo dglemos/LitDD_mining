@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+
+"""
+Script to scan processed BERT parquet outputs, filter rows where `bert_predict == 1`.
+Writes a consolidated parquet of positives and reports a row count.
+"""
+
 import os
 import glob
 import argparse

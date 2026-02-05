@@ -1,4 +1,16 @@
 #!/usr/bin/env python3
+
+"""
+Script to:
+    - stream PubMed parquet files
+    - filter rows: English, pubdate > 1980, non-empty abstract
+    - build title+abstract text
+    - run a BERT sequence-classification model to predict labels
+    - write enriched parquet outputs with `tiab` and 
+    `bert_predict` columns.
+Should be run on GPU for best performance.
+"""
+
 import os
 import gc
 import argparse

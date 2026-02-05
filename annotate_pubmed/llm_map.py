@@ -1,3 +1,16 @@
+#!/usr/bin/env python3
+
+"""
+Script to run vLLM over cross-encoded PubMed shards:
+    - build structured prompts from each row's `tiab` and top-5 G2P candidates
+    - generate LLM outputs in batches
+    - write shard-level parquet outputs with prompt and mapping fields
+
+Run on GPU for best performance.
+Supports optional sharding for distributed processing across multiple workers.
+Designed for incremental saving to avoid data loss and enable monitoring of progress.
+"""
+
 import os
 import re
 import gc

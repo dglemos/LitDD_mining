@@ -1,3 +1,13 @@
+#!/usr/bin/env python3
+
+"""
+Script to:
+    - merge LLM shard outputs
+    - filter to valid high-confidence G2P mappings
+    - enrich results with PubTator/NCBI gene symbols
+    - write the cleaned final parquet
+"""
+
 import argparse
 import glob
 import os
