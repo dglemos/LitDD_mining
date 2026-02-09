@@ -6,8 +6,7 @@ Script to:
     - filter rows: English, pubdate > 1980, non-empty abstract
     - build title+abstract text
     - run a BERT sequence-classification model to predict labels
-    - write enriched parquet outputs with `tiab` and 
-    `bert_predict` columns.
+    - write enriched parquet outputs with `tiab` and `bert_predict` columns.
 Should be run on GPU for best performance.
 """
 
@@ -27,11 +26,9 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
 # Enable TF32 matmul on Ampere/Hopper GPUs
 if torch.cuda.is_available():
-    # Optional: only enable on devices with SM >= 8.0 (Ampere+)
     major, _ = torch.cuda.get_device_capability(0)
     if major >= 8:
         torch.set_float32_matmul_precision("high")
-        # Optional: also allow TF32 for convs
         torch.backends.cudnn.allow_tf32 = True
 
 ROW_BATCH_SIZE = 8192  # CPU-side batch (streaming)
@@ -56,6 +53,7 @@ def load_model_and_tokenizer(
     device = get_device(device_str)
     model.to(device)
 
+    # Keep this minimal; top-of-file already enables TF32 where appropriate.
     if device.startswith("cuda"):
         torch.backends.cuda.matmul.allow_tf32 = True
         try:
@@ -66,12 +64,7 @@ def load_model_and_tokenizer(
 
 
 def safe_pubdate_gt_1980(x: Dict[str, Any]) -> bool:
-    """
-    Filter publications based on the following criteria:
-      - pubdate > 1980
-      - language is English
-    If publication does not follow these criteria, return False.
-    """
+    """English + pubdate > 1980"""
     try:
         pd = x.get("pubdate", None)
         pd = int(pd) if pd is not None else -1
@@ -81,22 +74,26 @@ def safe_pubdate_gt_1980(x: Dict[str, Any]) -> bool:
 
 
 def has_abstract(x: Dict[str, Any]) -> bool:
-    """
-    Check if the publication has abstract.
-    Return True if abstract exists and is non-empty.
-    """
+    """Return True if abstract exists and is non-empty (for strings)."""
     abstract = x.get("abstract", None)
     if abstract is None:
         return False
     if isinstance(abstract, str):
         return abstract.strip() != ""
-    return True
+    # If abstract is non-string (e.g., list), treat empty containers as missing
+    try:
+        return len(abstract) > 0  # type: ignore[arg-type]
+    except Exception:
+        return True
+
+
+def keep_row(x: Dict[str, Any]) -> bool:
+    """Combine filters into a single .filter() to avoid streaming features=None issues."""
+    return safe_pubdate_gt_1980(x) and has_abstract(x)
 
 
 def make_tiab(x: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Create 'tiab' field by concatenating title and abstract.
-    """
+    """Create 'tiab' field by concatenating title and abstract."""
     title = x.get("title", "") or ""
     abstract = x.get("abstract", "") or ""
     x["tiab"] = f"{title} {abstract}".strip()
@@ -105,14 +102,14 @@ def make_tiab(x: Dict[str, Any]) -> Dict[str, Any]:
 
 @torch.inference_mode()
 def predict_batch(
-    tokenizer, model, device, texts: List[str], pred_bs: int = PRED_BATCH_SIZE
+    tokenizer, model, device: str, texts: List[str], pred_bs: int = PRED_BATCH_SIZE
 ) -> List[int]:
     preds: List[int] = []
+    use_cuda = device.startswith("cuda")
     amp_dtype = (
-        torch.bfloat16
-        if (device.startswith("cuda") and torch.cuda.is_bf16_supported())
-        else torch.float16
+        torch.bfloat16 if (use_cuda and torch.cuda.is_bf16_supported()) else torch.float16
     )
+
     for i in range(0, len(texts), pred_bs):
         chunk = texts[i : i + pred_bs]
         enc = tokenizer(
@@ -122,15 +119,23 @@ def predict_batch(
             max_length=MAX_LENGTH,
             return_tensors="pt",
         )
-        for k in enc:
-            enc[k] = enc[k].pin_memory()
-        enc = {k: v.to(device, non_blocking=True) for k, v in enc.items()}
-        with torch.autocast(
-            device_type="cuda", dtype=amp_dtype, enabled=device.startswith("cuda")
-        ):
+
+        # Only pin memory if we're going to do async H2D copies
+        if use_cuda:
+            for k in enc:
+                enc[k] = enc[k].pin_memory()
+
+        enc = {k: v.to(device, non_blocking=use_cuda) for k, v in enc.items()}
+
+        if use_cuda:
+            with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=True):
+                logits = model(**enc).logits
+        else:
             logits = model(**enc).logits
+
         preds.extend(torch.argmax(logits, dim=-1).detach().cpu().tolist())
         del enc, logits
+
     return preds
 
 
@@ -167,26 +172,13 @@ def table_from_batch_with_schema(
         else:
             if name in batch:
                 vals = batch[name]
+                # Force schema type to keep output stable
                 arr = pa.array(vals, type=typ)
             else:
                 arr = pa.nulls(n, type=typ)
         columns[name] = arr
 
-    table = pa.Table.from_arrays([columns[f.name] for f in schema], schema=schema)
-    return table
-
-
-def rows_to_batch(rows: List[Dict[str, Any]], schema: pa.Schema) -> Dict[str, List[Any]]:
-    """Convert row-wise examples into a columnar batch aligned with output schema."""
-    names = [field.name for field in schema if field.name != "bert_predict"]
-    batch = {name: [] for name in names}
-    for row in rows:
-        for name in names:
-            if name == "tiab":
-                batch[name].append(row.get("tiab", ""))
-            else:
-                batch[name].append(row.get(name, None))
-    return batch
+    return pa.Table.from_arrays([columns[f.name] for f in schema], schema=schema)
 
 
 def process_one_parquet(
@@ -196,19 +188,25 @@ def process_one_parquet(
     model,
     device: str,
 ) -> bool:
-    os.makedirs(out_dir, exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
     base = os.path.basename(parquet_path)
     stem = os.path.splitext(base)[0]
-    out_path = os.path.join(out_dir, f"{stem}_bert_processed.parquet")
+    out_path = out_dir / f"{stem}_bert_processed.parquet"
 
-    if SKIP_IF_EXISTS and os.path.exists(out_path):
+    if SKIP_IF_EXISTS and out_path.exists():
         print(f"Skipping (already exists): {out_path}")
         return True
 
     try:
-        ds = load_dataset(
-            "parquet", data_files=parquet_path, split="train", streaming=True
-        )
+        ds = load_dataset("parquet", data_files=parquet_path, split="train", streaming=True)
+
+        # Use ONE filter call (important for some streaming datasets where features becomes None after filter)
+        ds = ds.filter(keep_row)
+
+        # Create tiab and then batch
+        ds = ds.map(make_tiab)
+        ds = ds.batch(ROW_BATCH_SIZE)
+
     except Exception:
         print(f"[ERROR] Failed to open or prepare dataset for: {parquet_path}")
         traceback.print_exc()
@@ -224,52 +222,38 @@ def process_one_parquet(
     writer = None
     total_rows = 0
     file_failed = False
+    use_cuda = device.startswith("cuda")
 
     try:
-        row_buffer: List[Dict[str, Any]] = []
-
-        def flush_buffer(rows: List[Dict[str, Any]]):
-            nonlocal writer, total_rows
-            if not rows:
-                return
-            batch = rows_to_batch(rows, out_schema)
-            texts = batch.get("tiab", [])
-            if not texts:
-                return
-            preds = predict_batch(tokenizer, model, device, texts)
-            table = table_from_batch_with_schema(batch, preds, out_schema)
-            if writer is None:
-                writer = pq.ParquetWriter(
-                    out_path, schema=out_schema, compression=PARQUET_COMPRESSION
-                )
-            writer.write_table(table)
-            total_rows += table.num_rows
-
-            del batch, table, preds, texts
-
-        for row in ds:
+        for batch in ds:
             try:
-                if not safe_pubdate_gt_1980(row):
+                texts = batch.get("tiab", [])
+                if not texts:
                     continue
-                if not has_abstract(row):
-                    continue
-                row_buffer.append(make_tiab(dict(row)))
-                if len(row_buffer) >= ROW_BATCH_SIZE:
-                    flush_buffer(row_buffer)
-                    row_buffer.clear()
 
-                gc.collect()
-                if device.startswith("cuda"):
-                    torch.cuda.empty_cache()
+                preds = predict_batch(tokenizer, model, device, texts)
+                table = table_from_batch_with_schema(batch, preds, out_schema)
+
+                if writer is None:
+                    writer = pq.ParquetWriter(
+                        str(out_path), schema=out_schema, compression=PARQUET_COMPRESSION
+                    )
+
+                writer.write_table(table)
+                total_rows += table.num_rows
+
+                del batch, table, preds, texts
+
+                # Avoid hot-loop GC / empty_cache; do occasional GC on long runs
+                if total_rows % (ROW_BATCH_SIZE * 50) == 0:
+                    gc.collect()
+
             except Exception:
                 file_failed = True
-                print(f"[ERROR] Failed processing a row batch in: {parquet_path}")
+                print(f"[ERROR] Failed processing a batch in: {parquet_path}")
                 traceback.print_exc()
                 break
 
-        if not file_failed:
-            flush_buffer(row_buffer)
-            row_buffer.clear()
     except Exception:
         file_failed = True
         print(f"[ERROR] Iteration over dataset failed for: {parquet_path}")
@@ -283,14 +267,14 @@ def process_one_parquet(
             traceback.print_exc()
 
     if file_failed:
-        if os.path.exists(out_path):
+        if out_path.exists():
             try:
-                os.remove(out_path)
+                out_path.unlink()
                 print(f"[CLEANUP] Removed partial output: {out_path}")
             except Exception:
                 print(f"[WARN] Failed to remove partial output: {out_path}")
                 traceback.print_exc()
-        if torch.cuda.is_available():
+        if use_cuda:
             torch.cuda.empty_cache()
         return False
 
@@ -298,9 +282,9 @@ def process_one_parquet(
         print(f"Wrote {total_rows} rows to {out_path}")
     else:
         print(f"No eligible rows in {parquet_path}; no output written.")
-        if os.path.exists(out_path):
+        if out_path.exists():
             try:
-                os.remove(out_path)
+                out_path.unlink()
                 print(f"[CLEANUP] Removed empty output: {out_path}")
             except Exception:
                 print(f"[WARN] Failed to remove empty output: {out_path}")
@@ -311,7 +295,7 @@ def process_one_parquet(
 
 def process_all_parquets(
     input_dir: Path,
-    processed_dir: str,
+    processed_dir: Path,
     bert_model: str,
     shard: int = 0,
     num_shards: int = 1,
@@ -319,13 +303,8 @@ def process_all_parquets(
     fail_fast: bool = False,
 ):
     tokenizer, model, device = load_model_and_tokenizer(bert_model, device)
-    files = sorted(
-        [
-            os.path.join(input_dir, f)
-            for f in os.listdir(input_dir)
-            if f.endswith(".parquet")
-        ]
-    )
+
+    files = sorted(str(p) for p in input_dir.iterdir() if p.is_file() and p.suffix == ".parquet")
     if not files:
         print(f"No parquet files found in {input_dir}")
         return
@@ -358,26 +337,11 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--shard", type=int, default=0, help="Shard index for file list")
     ap.add_argument("--num_shards", type=int, default=1, help="Total number of shards")
-    ap.add_argument(
-        "--device", type=str, default=None, help="Device string, e.g., cuda:0, cuda:1"
-    )
-    ap.add_argument(
-        "--fail_fast",
-        action="store_true",
-        help="Stop on first error instead of skipping the parquet file",
-    )
-    ap.add_argument(
-        "--input_dir",
-        type=Path,
-        required=True,
-        help="Directory containing the parquet files",
-    )
-    ap.add_argument(
-        "--processed_dir", type=Path, required=True, help="Directory for output files"
-    )
-    ap.add_argument(
-        "--bert_model", type=str, required=True, help="Directory to BERT model"
-    )
+    ap.add_argument("--device", type=str, default=None, help="Device string, e.g., cuda:0, cuda:1")
+    ap.add_argument("--fail_fast", action="store_true", help="Stop on first error instead of skipping the parquet file")
+    ap.add_argument("--input_dir", type=Path, required=True, help="Directory containing the parquet files")
+    ap.add_argument("--processed_dir", type=Path, required=True, help="Directory for output files")
+    ap.add_argument("--bert_model", type=str, required=True, help="Directory to BERT model")
     args = ap.parse_args()
 
     process_all_parquets(
