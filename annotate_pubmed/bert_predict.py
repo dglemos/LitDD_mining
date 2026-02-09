@@ -87,6 +87,11 @@ def has_abstract(x: Dict[str, Any]) -> bool:
         return True
 
 
+def keep_row(x: Dict[str, Any]) -> bool:
+    """Combine filters into a single .filter() to avoid streaming features=None issues."""
+    return safe_pubdate_gt_1980(x) and has_abstract(x)
+
+
 def make_tiab(x: Dict[str, Any]) -> Dict[str, Any]:
     """Create 'tiab' field by concatenating title and abstract."""
     title = x.get("title", "") or ""
@@ -194,11 +199,14 @@ def process_one_parquet(
 
     try:
         ds = load_dataset("parquet", data_files=parquet_path, split="train", streaming=True)
-        # Same approach as Code 1: batched-friendly streaming pipeline
-        ds = ds.filter(safe_pubdate_gt_1980)
-        ds = ds.filter(has_abstract)
+
+        # Use ONE filter call (important for some streaming datasets where features becomes None after filter)
+        ds = ds.filter(keep_row)
+
+        # Create tiab and then batch
         ds = ds.map(make_tiab)
         ds = ds.batch(ROW_BATCH_SIZE)
+
     except Exception:
         print(f"[ERROR] Failed to open or prepare dataset for: {parquet_path}")
         traceback.print_exc()
@@ -227,15 +235,16 @@ def process_one_parquet(
                 table = table_from_batch_with_schema(batch, preds, out_schema)
 
                 if writer is None:
-                    writer = pq.ParquetWriter(str(out_path), schema=out_schema, compression=PARQUET_COMPRESSION)
+                    writer = pq.ParquetWriter(
+                        str(out_path), schema=out_schema, compression=PARQUET_COMPRESSION
+                    )
 
                 writer.write_table(table)
                 total_rows += table.num_rows
 
                 del batch, table, preds, texts
 
-                # Light-touch cleanup only; avoid per-batch gc/empty_cache unless needed
-                # (Keep gc occasional to avoid pathological growth in long runs.)
+                # Avoid hot-loop GC / empty_cache; do occasional GC on long runs
                 if total_rows % (ROW_BATCH_SIZE * 50) == 0:
                     gc.collect()
 
