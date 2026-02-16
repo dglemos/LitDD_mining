@@ -26,9 +26,9 @@ import torch
 import numpy as np
 
 try:
-    from vllm.sampling_params import GuidedDecodingParams
+    from vllm.sampling_params import StructuredOutputsParams
 except Exception:
-    GuidedDecodingParams = None
+    StructuredOutputsParams = None
 
 
 def build_llm_prompt(tiab, candidate_structs):
@@ -271,12 +271,15 @@ def build_allowed_answer_choices(candidate_ids):
 
 def build_guided_sampling_params(candidate_ids, temperature, top_p, max_tokens):
     choices = build_allowed_answer_choices(candidate_ids)
-    guided = GuidedDecodingParams(choice=choices)
-    return SamplingParams(
-        temperature=temperature,
-        top_p=top_p,
-        max_tokens=max_tokens,
-        guided_decoding=guided,
+    if StructuredOutputsParams is not None:
+        return SamplingParams(
+            temperature=temperature,
+            top_p=top_p,
+            max_tokens=max_tokens,
+            structured_outputs=StructuredOutputsParams(choice=choices),
+        )
+    raise RuntimeError(
+        "No structured decoding API available (StructuredOutputsParams)."
     )
 
 
@@ -351,9 +354,9 @@ def run_llm_over_cross_shards(
         temperature=temperature, top_p=top_p, max_tokens=max_tokens
     )
     guided_enabled = not disable_guided_decoding
-    if guided_enabled and GuidedDecodingParams is None:
+    if guided_enabled and StructuredOutputsParams is None:
         print(
-            "[WARN] GuidedDecodingParams is unavailable in this vLLM build; "
+            "[WARN] Structured decoding is unavailable in this vLLM build; "
             "falling back to unconstrained decoding."
         )
         guided_enabled = False
