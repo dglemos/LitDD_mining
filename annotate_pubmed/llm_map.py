@@ -18,11 +18,17 @@ import glob
 import ast
 import json
 import argparse
+from itertools import combinations
 import pandas as pd
 import pyarrow as pa
 from vllm import LLM, SamplingParams
 import torch
 import numpy as np
+
+try:
+    from vllm.sampling_params import GuidedDecodingParams
+except Exception:
+    GuidedDecodingParams = None
 
 
 def build_llm_prompt(tiab, candidate_structs):
@@ -244,6 +250,36 @@ def format_candidate_structs(labels):
     return structs
 
 
+def extract_candidate_ids(labels):
+    ids = []
+    for label in labels or []:
+        data = parse_structured_candidate(label)
+        g2p_id = str(data.get("G2P_ID", "")).strip()
+        if g2p_id and g2p_id not in ids:
+            ids.append(g2p_id)
+    return ids
+
+
+def build_allowed_answer_choices(candidate_ids):
+    choices = []
+    for n in range(1, len(candidate_ids) + 1):
+        for combo in combinations(candidate_ids, n):
+            choices.append(f"ANSWER: {';'.join(combo)}")
+    choices.append("ANSWER: NO MATCH")
+    return choices
+
+
+def build_guided_sampling_params(candidate_ids, temperature, top_p, max_tokens):
+    choices = build_allowed_answer_choices(candidate_ids)
+    guided = GuidedDecodingParams(choice=choices)
+    return SamplingParams(
+        temperature=temperature,
+        top_p=top_p,
+        max_tokens=max_tokens,
+        guided_decoding=guided,
+    )
+
+
 def save_progress(df, generated_texts, out_parquet):
     df["generated_text"] = generated_texts
     df["llm_dis_map"] = [extract_last_answer(t) for t in generated_texts]
@@ -283,12 +319,14 @@ def run_llm_over_cross_shards(
     batch_size=32,
     temperature=0.0,
     top_p=1.0,
-    max_tokens=2048,
+    max_tokens=64,
     save_pickle=False,
     shard_index=None,
     num_shards=None,
     save_every=1000,
     tensor_parallel_size=None,
+    max_model_len=None,
+    disable_guided_decoding=False,
 ):
     """
     - Reads *.parquet from shards_dir
@@ -312,9 +350,18 @@ def run_llm_over_cross_shards(
     sampling_params = SamplingParams(
         temperature=temperature, top_p=top_p, max_tokens=max_tokens
     )
+    guided_enabled = not disable_guided_decoding
+    if guided_enabled and GuidedDecodingParams is None:
+        print(
+            "[WARN] GuidedDecodingParams is unavailable in this vLLM build; "
+            "falling back to unconstrained decoding."
+        )
+        guided_enabled = False
     llm_kwargs = {}
     if tensor_parallel_size is not None:
         llm_kwargs["tensor_parallel_size"] = int(tensor_parallel_size)
+    if max_model_len is not None:
+        llm_kwargs["max_model_len"] = int(max_model_len)
     llm = LLM(model=llm_model, **llm_kwargs)
 
     shard_paths, excluded = list_input_shards(shards_dir)
@@ -338,6 +385,7 @@ def run_llm_over_cross_shards(
         df = df.loc[scores_max.ge(0.01).fillna(False)].copy()
 
         df["top_5_cross_lgmde"] = df["top5_cross"].apply(to_labels)
+        df["candidate_ids"] = df["top_5_cross_lgmde"].apply(extract_candidate_ids)
 
         # Build prompts with structured candidate fields
         df["candidate_structs"] = df["top_5_cross_lgmde"].apply(
@@ -370,9 +418,28 @@ def run_llm_over_cross_shards(
             # Generate in vLLM batches over this chunk
             for b_start, b_end in batched_indices(chunk_start, chunk_end, batch_size):
                 batch_prompts = df["llm_prompt"].iloc[b_start:b_end].tolist()
-                outputs = llm.generate(batch_prompts, sampling_params)
+                if guided_enabled:
+                    batch_candidate_ids = df["candidate_ids"].iloc[b_start:b_end].tolist()
+                    batch_sampling_params = [
+                        build_guided_sampling_params(
+                            candidate_ids=ids,
+                            temperature=temperature,
+                            top_p=top_p,
+                            max_tokens=max_tokens,
+                        )
+                        for ids in batch_candidate_ids
+                    ]
+                    outputs = llm.generate(batch_prompts, batch_sampling_params)
+                else:
+                    outputs = llm.generate(batch_prompts, sampling_params)
                 for j, out in enumerate(outputs):
-                    generated_texts[b_start + j] = out.outputs[0].text
+                    item = out.outputs[0]
+                    generated_texts[b_start + j] = item.text
+                    if getattr(item, "finish_reason", None) == "length":
+                        print(
+                            f"[WARN] Row {b_start + j} reached max_tokens={max_tokens}; "
+                            "output may be truncated."
+                        )
 
             # Save after this chunk (overwrite file)
             save_progress(df, generated_texts, out_parquet)
@@ -392,14 +459,16 @@ def parse_args():
     p.add_argument("--llm_model", required=True, type=str)
     p.add_argument("--out_dir", type=str, default=None)
     p.add_argument("--batch_size", type=int, default=32)
-    p.add_argument("--temperature", type=float, default=0.8)
+    p.add_argument("--temperature", type=float, default=0.0)
     p.add_argument("--top_p", type=float, default=0.95)
-    p.add_argument("--max_tokens", type=int, default=2048)
+    p.add_argument("--max_tokens", type=int, default=64)
     p.add_argument("--save_pickle", action="store_true")  # kept for API compatibility
     p.add_argument("--shard_index", type=int, default=None)
     p.add_argument("--num_shards", type=int, default=None)
     p.add_argument("--save_every", type=int, default=1000)
     p.add_argument("--tensor_parallel_size", type=int, default=None)
+    p.add_argument("--max_model_len", type=int, default=None)
+    p.add_argument("--disable_guided_decoding", action="store_true")
     return p.parse_args()
 
 
@@ -418,4 +487,6 @@ if __name__ == "__main__":
         num_shards=args.num_shards,
         save_every=args.save_every,
         tensor_parallel_size=args.tensor_parallel_size,
+        max_model_len=args.max_model_len,
+        disable_guided_decoding=args.disable_guided_decoding,
     )
