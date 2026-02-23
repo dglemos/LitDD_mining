@@ -63,14 +63,17 @@ def load_model_and_tokenizer(
     return tokenizer, model, device
 
 
-def safe_pubdate_gt_1980(x: Dict[str, Any]) -> bool:
-    """English + pubdate > 1980"""
+def safe_pubdate_by_year(x: Dict[str, Any], min_year: int = 1981) -> bool:
+    """
+    This method only keep publications in English language
+    and with pubdate >= min_year (defaults to 1981, i.e. pubdate > 1980).
+    """
     try:
         pd = x.get("pubdate", None)
         pd = int(pd) if pd is not None else -1
     except Exception:
         pd = -1
-    return (x.get("languages") == "eng") and (pd > 1980)
+    return (x.get("languages") == "eng") and (pd >= min_year)
 
 
 def has_abstract(x: Dict[str, Any]) -> bool:
@@ -87,9 +90,9 @@ def has_abstract(x: Dict[str, Any]) -> bool:
         return True
 
 
-def keep_row(x: Dict[str, Any]) -> bool:
+def keep_row(x: Dict[str, Any], min_year: int = 1981) -> bool:
     """Combine filters into a single .filter() to avoid streaming features=None issues."""
-    return safe_pubdate_gt_1980(x) and has_abstract(x)
+    return safe_pubdate_by_year(x, min_year=min_year) and has_abstract(x)
 
 
 def make_tiab(x: Dict[str, Any]) -> Dict[str, Any]:
@@ -187,6 +190,7 @@ def process_one_parquet(
     tokenizer,
     model,
     device: str,
+    select_year: Optional[int] = None,
 ) -> bool:
     out_dir.mkdir(parents=True, exist_ok=True)
     base = os.path.basename(parquet_path)
@@ -201,7 +205,8 @@ def process_one_parquet(
         ds = load_dataset("parquet", data_files=parquet_path, split="train", streaming=True)
 
         # Use ONE filter call (important for some streaming datasets where features becomes None after filter)
-        ds = ds.filter(keep_row)
+        min_year = select_year if select_year is not None else 1981
+        ds = ds.filter(lambda x: keep_row(x, min_year=min_year))
 
         # Create tiab and then batch
         ds = ds.map(make_tiab)
@@ -301,7 +306,14 @@ def process_all_parquets(
     num_shards: int = 1,
     device: Optional[str] = None,
     fail_fast: bool = False,
+    select_year: Optional[int] = None,
 ):
+    min_year = select_year if select_year is not None else 1981
+    if select_year is None:
+        print("[CONFIG] Publication filter: pubdate >= 1980 (default)")
+    else:
+        print(f"[CONFIG] Publication filter: pubdate >= {select_year}")
+
     tokenizer, model, device = load_model_and_tokenizer(bert_model, device)
 
     files = sorted(str(p) for p in input_dir.iterdir() if p.is_file() and p.suffix == ".parquet")
@@ -314,7 +326,14 @@ def process_all_parquets(
     for path in files:
         print(f"[shard {shard}/{num_shards}] Processing: {path}")
         try:
-            ok = process_one_parquet(path, processed_dir, tokenizer, model, device)
+            ok = process_one_parquet(
+                path,
+                processed_dir,
+                tokenizer,
+                model,
+                device,
+                select_year=min_year,
+            )
             if not ok:
                 if fail_fast:
                     raise RuntimeError(f"Stopping due to error on file: {path}")
@@ -342,6 +361,12 @@ def main():
     ap.add_argument("--input_dir", type=Path, required=True, help="Directory containing the parquet files")
     ap.add_argument("--processed_dir", type=Path, required=True, help="Directory for output files")
     ap.add_argument("--bert_model", type=str, required=True, help="Directory to BERT model")
+    ap.add_argument(
+        "--select_year",
+        type=int,
+        default=None,
+        help="Only include publications with pubdate >= year (default: 1981)",
+    )
     args = ap.parse_args()
 
     process_all_parquets(
@@ -352,6 +377,7 @@ def main():
         num_shards=args.num_shards,
         device=args.device,
         fail_fast=args.fail_fast,
+        select_year=args.select_year,
     )
 
 
