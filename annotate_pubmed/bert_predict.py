@@ -13,6 +13,7 @@ Should be run on GPU for best performance.
 import os
 import gc
 import argparse
+import re
 import traceback
 from typing import Dict, Any, Optional, Tuple, List
 from pathlib import Path
@@ -22,6 +23,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from datasets import load_dataset
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
+
+_YEAR_RE = re.compile(r"(\d{4})")
 
 
 # Enable TF32 matmul on Ampere/Hopper GPUs
@@ -63,18 +66,52 @@ def load_model_and_tokenizer(
     return tokenizer, model, device
 
 
+def extract_year(pubdate: Any) -> Optional[int]:
+    if pubdate is None:
+        return None
+    if isinstance(pubdate, int):
+        return pubdate
+    if isinstance(pubdate, float):
+        # common when parquet stores numeric years with nulls -> float
+        return int(pubdate)
+    if isinstance(pubdate, str):
+        m = _YEAR_RE.search(pubdate)
+        return int(m.group(1)) if m else None
+    if isinstance(pubdate, dict):
+        y = pubdate.get("year")
+        try:
+            return int(y) if y is not None else None
+        except Exception:
+            return None
+    return None
+
+def is_english(langs: Any) -> bool:
+    if langs is None:
+        return False
+    if isinstance(langs, str):
+        s = langs.strip().lower()
+        # split on common separators
+        parts = re.split(r"[,\s;|/]+", s)
+        return "eng" in parts
+    if isinstance(langs, (list, tuple, set)):
+        parts = []
+        for x in langs:
+            if x is None:
+                continue
+            if isinstance(x, str):
+                parts.append(x.strip().lower())
+            else:
+                parts.append(str(x).strip().lower())
+        return "eng" in parts
+    return str(langs).strip().lower() == "eng"
+
 def safe_pubdate_by_year(x: Dict[str, Any], min_year: int = 1981) -> bool:
     """
     This method only keep publications in English language
     and with pubdate >= min_year (defaults to 1981, i.e. pubdate > 1980).
     """
-    try:
-        pd = x.get("pubdate", None)
-        pd = int(pd) if pd is not None else -1
-    except Exception:
-        pd = -1
-    return (x.get("languages") == "eng") and (pd >= min_year)
-
+    year = extract_year(x.get("pubdate"))
+    return is_english(x.get("languages")) and (year is not None) and (year >= min_year)
 
 def has_abstract(x: Dict[str, Any]) -> bool:
     """Return True if abstract exists and is non-empty (for strings)."""

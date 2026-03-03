@@ -67,7 +67,8 @@ python annotate_pubmed/pubmed_to_parquet.py --download_dir <path_to_pubmed_raw_d
 ```bash
 python annotate_pubmed/bert_predict.py --input_dir <path_to_pubmed_parquet_dir> \
 --processed_dir <bert_processed_dir> \
---bert_model <path_to_bert_model>
+--bert_model <path_to_bert_model> \
+--select_year <year>
 ```
 Outputs to `bert_processed_dir`
 
