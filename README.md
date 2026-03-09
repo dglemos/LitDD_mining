@@ -91,6 +91,10 @@ python annotate_pubmed/crossencode.py \
 ```
 
 ### 6) LLM mapping
+Rows are pre-filtered before LLM mapping by the cross-encoder score in `top5_cross`
+(current cutoff: 0.01).
+
+## Option 1: open source
 ```bash
 python annotate_pubmed/llm_map.py \
   --shards_dir <path_to_crossencoded_shards> \
@@ -99,8 +103,17 @@ python annotate_pubmed/llm_map.py \
   --batch_size 32 --max_tokens 256 \
   --temperature 0.0 --top_p 1.0
 ```
-Rows are pre-filtered before LLM mapping by the cross-encoder score in `top5_cross`
-(current cutoff: 0.01 in `llm_map.py`).
+
+## Option 2: Google Gemini
+```bash
+python annotate_pubmed/llm_map_gemini.py \
+  --parquet_file <crossencoded_parquet_file> \
+  --output gemini_output_update.csv \
+  --config gemini_config.ini \
+```
+Running Gemini is slower than the open source LLM mapping - it should only be used for a small update.
+The option `--resume` will resume the run from the last analysed PMID+G2P ID
+
 
 ### 7) Final cleaning and enrichment
 There are three requirements to run the final script:
