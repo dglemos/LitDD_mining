@@ -94,7 +94,7 @@ python annotate_pubmed/crossencode.py \
 Rows are pre-filtered before LLM mapping by the cross-encoder score in `top5_cross`
 (current cutoff: 0.01).
 
-## Option 1: open source
+#### Option 1: open source
 ```bash
 python annotate_pubmed/llm_map.py \
   --shards_dir <path_to_crossencoded_shards> \
@@ -104,7 +104,7 @@ python annotate_pubmed/llm_map.py \
   --temperature 0.0 --top_p 1.0
 ```
 
-## Option 2: Google Gemini
+#### Option 2: Google Gemini
 ```bash
 python annotate_pubmed/llm_map_gemini.py \
   --parquet_file <crossencoded_parquet_file> \
