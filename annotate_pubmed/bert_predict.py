@@ -113,30 +113,18 @@ def safe_pubdate_by_year(x: Dict[str, Any], min_year: int = 1981) -> bool:
     year = extract_year(x.get("pubdate"))
     return is_english(x.get("languages")) and (year is not None) and (year >= min_year)
 
-def has_abstract(x: Dict[str, Any]) -> bool:
-    """Return True if abstract exists and is non-empty (for strings)."""
-    abstract = x.get("abstract", None)
-    if abstract is None:
-        return False
-    if isinstance(abstract, str):
-        return abstract.strip() != ""
-    # If abstract is non-string (e.g., list), treat empty containers as missing
-    try:
-        return len(abstract) > 0  # type: ignore[arg-type]
-    except Exception:
-        return True
-
 
 def keep_row(x: Dict[str, Any], min_year: int = 1981) -> bool:
     """Combine filters into a single .filter() to avoid streaming features=None issues."""
-    return safe_pubdate_by_year(x, min_year=min_year) and has_abstract(x)
+    return safe_pubdate_by_year(x, min_year=min_year)
 
 
 def make_tiab(x: Dict[str, Any]) -> Dict[str, Any]:
-    """Create 'tiab' field by concatenating title and abstract."""
-    title = x.get("title", "") or ""
-    abstract = x.get("abstract", "") or ""
-    x["tiab"] = f"{title} {abstract}".strip()
+    """Create 'tiab' field using only the title."""
+    title = x.get("title", "")
+    if not isinstance(title, str):
+        title = str(title) if title is not None else ""
+    x["tiab"] = title.strip()
     return x
 
 
