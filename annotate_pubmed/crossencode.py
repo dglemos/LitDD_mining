@@ -125,7 +125,7 @@ def build_g2p_lgmde_list(g2p_csv_path: str) -> List[str]:
             g2p = g2p.with_columns(pl.col(c).cast(pl.Utf8, strict=False))
 
     g2p = g2p.with_columns(
-        pl.concat_str([pl.col(c) for c in cols], separator=" - ").alias("g2p_lgmde")
+        pl.concat_str([pl.col(c) for c in cols], separator=" --- ").alias("g2p_lgmde")
     )
 
     unique_lgmde = g2p.get_column("g2p_lgmde").unique().to_list()

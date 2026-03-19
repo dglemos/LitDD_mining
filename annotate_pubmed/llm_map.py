@@ -204,7 +204,7 @@ def to_labels(x):
 def parse_structured_candidate(label_str):
     if not isinstance(label_str, str) or not label_str.strip():
         return {}
-    parts = [p.strip() for p in label_str.split(" - ")]
+    parts = [p.strip() for p in label_str.split(" --- ")]
     keys = [
         "G2P_ID",
         "GENE",
