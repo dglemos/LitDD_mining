@@ -116,17 +116,16 @@ The option `--resume` will resume the run from the last analysed PMID+G2P ID
 
 
 ### 7) Final cleaning and enrichment
-There are three requirements to run the final script:
+There are two requirements to run the final script:
 - G2P csv file
 - download gene2pubtator3 from https://ftp.ncbi.nlm.nih.gov/pub/lu/PubTator3/
-- download the ncbi gene ids from https://ftp.ncbi.nlm.nih.gov/gene/DATA/gene_info.gz
 
 ```bash
-python annotate_pubmed/final_data_clean.py \
-  --parquet_dir <path_to_llm_map_output_dir> \
-  --g2p_csv <path_to_G2P_file> \
-  --gene2pubtator3 <path_to_gene2pubtator3> \
-  --gene_info <path_to_ncbd_genes_file> \
+python annotate_pubmed/final_data_clean_v2.py \
+  --llm_file <llm_map_output_parquet> \
+  --g2p_file <path_to_G2P_file> \
+  --gene2pubtator <path_to_gene2pubtator3> \
+  --output_csv <output_final_mappings.csv> \
   --score_cutoff 0.9
 ```
 `--score_cutoff` filters rows by the cross-encoder score in `top5_cross` (default: 0.9).
