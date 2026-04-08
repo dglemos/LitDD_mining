@@ -223,7 +223,8 @@ not just related systems).
 mechanistically relevant or closely related context, but without \
 demonstrating a direct association between the two. \
 The disease context should still be similar \
-(e.g. same system or phenotype family).
+(e.g. same phenotype family or allelic requirement) and the article should provide \
+new evidence for the gene-disease association.
 - low: the article discusses the gene or disease in an unrelated context, \
 or links the gene to a different disease than the one specified or focuses on \
 a different gene.
@@ -242,7 +243,7 @@ Consider whether the molecular mechanism described in the publication \
 (e.g. gain or loss of function) matches the mechanism in the record (if available) \
 when assessing similarity.
 If the publication or the record do not mention a molecular mechanism, base your \
-decision on the gene–disease association itself (e.g. clinical or genetic evidence). \
+decision on the gene-disease association itself (e.g. clinical or genetic evidence). \
 Do not lower relevance solely because the mechanism is unspecified.
 If the publication discusses multiple genes or structural variants involving \
 the specified gene then assign "low" relevance.
