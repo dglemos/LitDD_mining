@@ -22,19 +22,30 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import configparser
 import csv
 import gzip
 import json
 import os
+from enum import Enum
+from html.parser import HTMLParser
 from pathlib import Path
 import re
 import sys
-import xml.etree.ElementTree as ET
-from html.parser import HTMLParser
 from urllib.error import HTTPError
 from urllib.request import urlopen
+import xml.etree.ElementTree as ET
 
 import pyarrow.parquet as pq
+from google.oauth2 import service_account
+from pydantic import BaseModel
+
+try:
+    from google import genai
+    from google.genai.types import HttpOptions
+except ModuleNotFoundError:
+    genai = None
+    HttpOptions = None
 
 
 def parse_args() -> argparse.Namespace:
@@ -84,8 +95,6 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_json_key(key_file):
-    from google.oauth2 import service_account
-
     credentials = service_account.Credentials.from_service_account_file(key_file).with_scopes(
         ["https://www.googleapis.com/auth/cloud-platform"]
     )
@@ -191,9 +200,6 @@ def get_article(pmid: int) -> dict | None:
 
 
 def process_publication(client, record: dict, article: dict, model: str):
-    from enum import Enum
-    from pydantic import BaseModel
-
     class Label(Enum):
         HIGH = "high"
         MEDIUM = "medium"
@@ -282,19 +288,17 @@ def main() -> int:
     gemini_config = args.gemini_config
     resume = args.resume
 
-    total_count= 0
+    total_count = 0
     valid_count = 0
+    written_count = 0
+    resume_skipped_count = 0
     gemini_enabled = gemini_config is not None
     gemini_client = None
     gemini_model = None
 
     if gemini_enabled:
-        try:
-            import configparser
-            from google import genai
-            from google.genai.types import HttpOptions
-        except ModuleNotFoundError as exc:
-            print(f"Gemini dependencies are missing: {exc}", file=sys.stderr)
+        if genai is None or HttpOptions is None:
+            print("Gemini dependencies are missing: google-genai", file=sys.stderr)
             return 1
 
         config_path = Path(gemini_config).expanduser().resolve()
@@ -448,12 +452,13 @@ def main() -> int:
 
                 g2p_genes = g2p_map_gene[g2p]
                 if any(g in genes_for_pmid_set for g in g2p_genes):
+                    valid_count += 1
                     pair = (str(pmid).strip(), str(g2p).strip())
                     if resume and pair in processed_pairs:
+                        resume_skipped_count += 1
                         if debug:
                             print(f"{pmid}\t{g2p}\tSKIP RESUME")
                         continue
-                    valid_count += 1
                     if debug:
                         print(f"{pmid}\t{g2p}\tVALID")
                     row = [pmid, g2p]
@@ -461,6 +466,10 @@ def main() -> int:
                         relevance_label = ""
                         relevance_comment = ""
                         try:
+                            print(
+                                f"Gemini start: PMID {pmid} G2P {g2p}",
+                                flush=True,
+                            )
                             article = get_article(pmid)
                             if article:
                                 relevance = process_publication(
@@ -471,8 +480,17 @@ def main() -> int:
                                 )
                                 relevance_label = relevance.label.value
                                 relevance_comment = relevance.comment
+                                print(
+                                    f"Gemini done: PMID {pmid} G2P {g2p} -> {relevance_label}",
+                                    flush=True,
+                                )
                             elif debug:
                                 print(f"{pmid}\t{g2p}\tGemini skipped: article not found")
+                            else:
+                                print(
+                                    f"Gemini skipped: PMID {pmid} G2P {g2p} article not found",
+                                    flush=True,
+                                )
                         except Exception as exc:
                             print(
                                 f"Gemini error for PMID {pmid} G2P {g2p}: {exc}",
@@ -480,6 +498,7 @@ def main() -> int:
                             )
                         row.extend([relevance_label, relevance_comment])
                     out_writer.writerow(row)
+                    written_count += 1
                     if resume:
                         processed_pairs.add(pair)
                 else:
@@ -488,6 +507,9 @@ def main() -> int:
     print(f"Loaded: {parquet_path}")
     print(f"Total mappings: {total_count}")
     print(f"Valid mappings: {valid_count}")
+    if resume:
+        print(f"Resume skipped: {resume_skipped_count}")
+    print(f"Written mappings: {written_count}")
     print(f"Wrote: {output_csv}")
     return 0
 
