@@ -53,17 +53,15 @@ hf download <model_name> \
 
 ### 1) Download PubMed XML
 ```bash
-python annotate_pubmed/download_pubmed.py --home_dir <path_to_pubmed_download_dir>
+python annotate_pubmed/download_pubmed.py \
+  --home_dir <path_to_pubmed_download_dir> \
+  --output_dir <path_to_pubmed_parquet_dir>
 ```
 Outputs to `path_to_pubmed_download_dir/raw_download_files`.
 
-### 2) Convert XML to parquet
-```bash
-python annotate_pubmed/pubmed_to_parquet.py --download_dir <path_to_pubmed_raw_download_dir> \
---output_dir <path_to_pubmed_parquet_dir>
-```
+Parquet files are written to `<path_to_pubmed_parquet_dir>`.
 
-### 3) Run BERT prediction over parquet
+### 2) Run BERT prediction over parquet
 ```bash
 python annotate_pubmed/bert_predict.py --input_dir <path_to_pubmed_parquet_dir> \
 --processed_dir <bert_processed_dir> \
@@ -72,7 +70,7 @@ python annotate_pubmed/bert_predict.py --input_dir <path_to_pubmed_parquet_dir> 
 ```
 Outputs to `bert_processed_dir`
 
-### 4) Build positives parquet
+### 3) Build positives parquet
 ```bash
 python annotate_pubmed/build_bert_positives.py \
   --processed_dir <bert_processed_dir> \
@@ -80,7 +78,7 @@ python annotate_pubmed/build_bert_positives.py \
 ```
 Outputs to file `pubmed_bert_positive.parquet`
 
-### 5) Cross-encode against G2P
+### 4) Cross-encode against G2P
 ```bash
 python annotate_pubmed/crossencode.py \
   --input_parquet pubmed_bert_positive.parquet \
@@ -104,17 +102,6 @@ python annotate_pubmed/llm_map.py \
   --temperature 0.0 --top_p 1.0
 ```
 
-#### Option 2: Google Gemini
-```bash
-python annotate_pubmed/llm_map_gemini.py \
-  --parquet_file <crossencoded_parquet_file> \
-  --output gemini_output_update.csv \
-  --config gemini_config.ini \
-```
-Running Gemini is slower than the open source LLM mapping - it should only be used for a small update.
-The option `--resume` will resume the run from the last analysed PMID+G2P ID
-
-
 ### 7) Final cleaning and enrichment
 There are two requirements to run the final script:
 - G2P csv file
@@ -129,6 +116,25 @@ python annotate_pubmed/final_data_clean_v2.py \
   --score_cutoff 0.9
 ```
 `--score_cutoff` filters rows by the cross-encoder score in `top5_cross` (default: 0.9).
+
+Optional flags:
+- `--gemini_config <gemini_config.ini>`: run Gemini relevance analysis for each valid PMID/G2P pair and append `gemini_relevance_label` and `gemini_relevance_comment` columns.
+- `--resume`: resume from an existing output CSV by appending new rows and skipping already processed `PMID` / `G2P_ID` pairs.
+
+Example with Gemini:
+
+```bash
+python annotate_pubmed/final_data_clean_v2.py \
+  --llm_file <llm_map_output_parquet> \
+  --g2p_file <path_to_G2P_file> \
+  --gene2pubtator <path_to_gene2pubtator3> \
+  --output_csv <output_final_mappings.csv> \
+  --score_cutoff 0.9 \
+  --gemini_config gemini_config.ini \
+  --resume
+```
+
+Note: Gemini analysis can be slow, so it is recommended to use it together with `--resume`.
 
 ## Optional: model training helpers
 These scripts are for building and training the models used above:
