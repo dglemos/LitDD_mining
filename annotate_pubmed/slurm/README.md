@@ -21,7 +21,9 @@ Open `annotate_pubmed/slurm/run_pipeline_slurm.sh` and set:
   by `bert_predict.py`
 - `LLM_MODEL_DIR` to the vLLM model identifier or local model path you want to use
 - Optional `LLM_MAX_MODEL_LEN` to pass `--max_model_len` through to `llm_map.py`
-- SLURM account/partition names and resource sizes
+- Optional `SLURM_ACCOUNT`, plus memory, time, and GPU resource settings
+- `SLURM_GPU_GRES` as the full GPU gres string for your cluster, for example
+  `gpu:a100:1`
 - Optional sharding (`SHARD_INDEX`, `NUM_SHARDS`)
 - Optional Gemini final-clean settings (`GEMINI_CONFIG`, `FINAL_RESUME`)
 

@@ -105,7 +105,6 @@ def get_xml_files(directory):
 
 
 def convert_downloads_to_parquet(download_dir, output_dir):
-    os.makedirs(output_dir, exist_ok=True)
     failed_conversions = []
     for xml_file in get_xml_files(download_dir):
         if not process_file_to_parquet(xml_file, output_dir):
@@ -144,6 +143,7 @@ def main():
 
     if args.convert_to_parquet:
         output_dir = args.output_dir or os.path.join(args.home_dir, "parquet_download_files")
+        os.makedirs(output_dir, exist_ok=True)
         failed_conversions = convert_downloads_to_parquet(download_dir, str(output_dir))
 
     if failed_downloads or failed_conversions:

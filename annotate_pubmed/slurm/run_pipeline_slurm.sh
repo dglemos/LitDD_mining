@@ -68,17 +68,15 @@ SHARD_INDEX="${SHARD_INDEX:-0}"
 NUM_SHARDS="${NUM_SHARDS:-1}"
 
 # SLURM settings (edit for your cluster)
-SLURM_ACCOUNT="${SLURM_ACCOUNT:-my_account}"
-SLURM_PARTITION_CPU="${SLURM_PARTITION_CPU:-cpu}"
-SLURM_PARTITION_GPU="${SLURM_PARTITION_GPU:-gpu}"
-CPUS="${CPUS:-4}"
+SLURM_ACCOUNT="${SLURM_ACCOUNT:-}"
 MEM_CPU="${MEM_CPU:-16G}"
 MEM_CPU_LARGE="${MEM_CPU_LARGE:-48G}"
-MEM_GPU="${MEM_GPU:-48G}"
-TIME_CPU_SHORT="${TIME_CPU_SHORT:-02:00:00}"
-TIME_CPU_LONG="${TIME_CPU_LONG:-08:00:00}"
-TIME_GPU="${TIME_GPU:-12:00:00}"
-GPUS="${GPUS:-1}"
+MEM_GPU="${MEM_GPU:-80G}"
+TIME_CPU_SHORT="${TIME_CPU_SHORT:-12:00:00}"
+TIME_CPU_LONG="${TIME_CPU_LONG:-48:00:00}"
+TIME_GPU="${TIME_GPU:-24:00:00}"
+# Full GPU gres string, for example gpu:a100:1.
+SLURM_GPU_GRES="${SLURM_GPU_GRES:-gpu:a100:1}"
 
 # ---- End user config ----
 
@@ -110,27 +108,31 @@ export SHARD_INDEX NUM_SHARDS
 
 submit_job() {
   local name="$1"
-  local partition="$2"
-  local cpus="$3"
-  local mem="$4"
-  local time="$5"
-  local gpus="${6:-0}"
-  local dep="${7:-}"
-  local script="$8"
+  local partition="${2:-}"
+  local mem="$3"
+  local time="$4"
+  local gpu_gres="${5:-}"
+  local dep="${6:-}"
+  local script="$7"
 
   local args=(
     "--job-name=${name}"
-    "--partition=${partition}"
-    "--account=${SLURM_ACCOUNT}"
-    "--cpus-per-task=${cpus}"
     "--mem=${mem}"
     "--time=${time}"
     "--output=${LOG_DIR}/${name}.%j.out"
     "--error=${LOG_DIR}/${name}.%j.err"
   )
 
-  if [[ "${gpus}" -gt 0 ]]; then
-    args+=("--gres=gpu:${gpus}")
+  if [[ -n "${partition}" ]]; then
+    args+=("--partition=${partition}")
+  fi
+
+  if [[ -n "${SLURM_ACCOUNT}" ]]; then
+    args+=("--account=${SLURM_ACCOUNT}")
+  fi
+
+  if [[ -n "${gpu_gres}" ]]; then
+    args+=("--gres=${gpu_gres}")
   fi
 
   if [[ -n "${dep}" ]]; then
@@ -142,12 +144,12 @@ submit_job() {
 
 echo "Submitting pipeline jobs..."
 
-jid1=$(submit_job "pubmed_download" "${SLURM_PARTITION_CPU}" "${CPUS}" "${MEM_CPU}" "${TIME_CPU_LONG}" 0 "" "${SBATCH_DIR}/step1_download.sbatch")
-jid2=$(submit_job "bert_predict" "${SLURM_PARTITION_GPU}" "${CPUS}" "${MEM_GPU}" "${TIME_GPU}" "${GPUS}" "${jid1}" "${SBATCH_DIR}/step2_bert_predict.sbatch")
-jid3=$(submit_job "bert_positives" "${SLURM_PARTITION_CPU}" "${CPUS}" "${MEM_CPU}" "${TIME_CPU_SHORT}" 0 "${jid2}" "${SBATCH_DIR}/step3_build_positives.sbatch")
-jid4=$(submit_job "crossencode" "${SLURM_PARTITION_GPU}" "${CPUS}" "${MEM_GPU}" "${TIME_GPU}" "${GPUS}" "${jid3}" "${SBATCH_DIR}/step4_crossencode.sbatch")
-jid5=$(submit_job "llm_map" "${SLURM_PARTITION_GPU}" "${CPUS}" "${MEM_GPU}" "${TIME_GPU}" "${GPUS}" "${jid4}" "${SBATCH_DIR}/step5_llm_map.sbatch")
-jid6=$(submit_job "final_clean" "${SLURM_PARTITION_CPU}" "${CPUS}" "${MEM_CPU_LARGE}" "${TIME_CPU_LONG}" 0 "${jid5}" "${SBATCH_DIR}/step6_final_clean.sbatch")
+jid1=$(submit_job "pubmed_download" "" "${MEM_CPU}" "${TIME_CPU_LONG}" "" "" "${SBATCH_DIR}/step1_download.sbatch")
+jid2=$(submit_job "bert_predict" "" "${MEM_GPU}" "${TIME_GPU}" "${SLURM_GPU_GRES}" "${jid1}" "${SBATCH_DIR}/step2_bert_predict.sbatch")
+jid3=$(submit_job "bert_positives" "" "${MEM_CPU}" "${TIME_CPU_SHORT}" "" "${jid2}" "${SBATCH_DIR}/step3_build_positives.sbatch")
+jid4=$(submit_job "crossencode" "" "${MEM_GPU}" "${TIME_GPU}" "${SLURM_GPU_GRES}" "${jid3}" "${SBATCH_DIR}/step4_crossencode.sbatch")
+jid5=$(submit_job "llm_map" "" "${MEM_GPU}" "${TIME_GPU}" "${SLURM_GPU_GRES}" "${jid4}" "${SBATCH_DIR}/step5_llm_map.sbatch")
+jid6=$(submit_job "final_clean" "" "${MEM_CPU_LARGE}" "${TIME_CPU_LONG}" "" "${jid5}" "${SBATCH_DIR}/step6_final_clean.sbatch")
 
 echo "Submitted jobs:"
 echo "  1) pubmed_download     ${jid1}"
