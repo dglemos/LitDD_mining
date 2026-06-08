@@ -2,13 +2,17 @@
 set -euo pipefail
 
 : "${ANNOTATE_PUBMED_DIR:?ANNOTATE_PUBMED_DIR is required}"
+: "${CONDA_SH:?CONDA_SH is required}"
+: "${CONDA_ENV_PATH:?CONDA_ENV_PATH is required}"
 : "${PUBMED_PARQUET_DIR:?PUBMED_PARQUET_DIR is required}"
 : "${BERT_PROCESSED_DIR:?BERT_PROCESSED_DIR is required}"
 : "${BERT_MODEL_DIR:?BERT_MODEL_DIR is required}"
 : "${SHARD_INDEX:?SHARD_INDEX is required}"
 : "${NUM_SHARDS:?NUM_SHARDS is required}"
 
-source activate g2p-llm
+source "${CONDA_SH}"
+conda activate "${CONDA_ENV_PATH}"
+export PATH="${CONDA_PREFIX}/bin:$PATH"
 
 bert_args=(
   --input_dir "${PUBMED_PARQUET_DIR}"

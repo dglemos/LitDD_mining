@@ -2,13 +2,17 @@
 set -euo pipefail
 
 : "${ANNOTATE_PUBMED_DIR:?ANNOTATE_PUBMED_DIR is required}"
+: "${CONDA_SH:?CONDA_SH is required}"
+: "${CONDA_ENV_PATH:?CONDA_ENV_PATH is required}"
 : "${LLM_OUT_DIR:?LLM_OUT_DIR is required}"
 : "${G2P_CSV:?G2P_CSV is required}"
 : "${GENE2PUBTATOR3:?GENE2PUBTATOR3 is required}"
 : "${FINAL_OUT_CSV:?FINAL_OUT_CSV is required}"
 : "${SCORE_CUTOFF:?SCORE_CUTOFF is required}"
 
-source activate g2p-llm
+source "${CONDA_SH}"
+conda activate "${CONDA_ENV_PATH}"
+export PATH="${CONDA_PREFIX}/bin:$PATH"
 
 shopt -s nullglob
 llm_files=( "${LLM_OUT_DIR}"/*__llm.parquet )

@@ -14,6 +14,8 @@ Open `annotate_pubmed/slurm/run_pipeline_slurm.sh` and set:
 - `ANNOTATE_PUBMED_DIR` for the directory containing the `annotate_pubmed`
   Python scripts
 - `WORK_DIR` for the pipeline working directory, logs, and default output base
+- `CONDA_SH` for the Conda shell init script
+- `CONDA_ENV_PATH` for the Conda environment path to activate
 - All input/output paths (PubMed download/parquet dirs, model dirs, etc.)
 - Optional `SINCE_DATE` in `YYYY-MM-DD` format to download only files with a
   remote `Last-Modified` date on or after that date
@@ -62,12 +64,10 @@ so they do not depend on changing into `WORK_DIR` first.
 Each SLURM step script runs:
 
 ```bash
-source activate g2p-llm
+source "${CONDA_SH}"
+conda activate "${CONDA_ENV_PATH}"
+export PATH="${CONDA_PREFIX}/bin:$PATH"
 ```
-
-If your cluster requires initializing conda (e.g. `source /path/to/conda.sh`),
-add that line above `source activate g2p-llm` in each step script under
-`annotate_pubmed/slurm/`.
 
 ## 4) Pipeline steps (in order)
 
@@ -88,6 +88,8 @@ The corresponding SLURM wrappers are:
 
 `download_pubmed.py` now performs XML-to-parquet conversion by default, so the
 old standalone `pubmed_to_parquet.py` step is no longer part of the pipeline.
+The SLURM wrapper runs step 1 with `--update_mode`, so it downloads PubMed
+update files rather than the combined baseline+update set.
 Step 1 now exits nonzero if any download or parquet conversion fails, so
 downstream jobs will not run on partial data.
 

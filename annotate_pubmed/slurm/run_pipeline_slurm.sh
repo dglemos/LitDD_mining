@@ -27,6 +27,8 @@ abspath_existing() {
 ANNOTATE_PUBMED_DIR="${ANNOTATE_PUBMED_DIR:-${DEFAULT_ANNOTATE_PUBMED_DIR}}"
 # Working directory for job execution and default output locations.
 WORK_DIR="${WORK_DIR:-${DEFAULT_WORK_DIR}}"
+CONDA_SH="${CONDA_SH:-/nfs/production/mfreeberg/g2p/src/miniforge3/etc/profile.d/conda.sh}"
+CONDA_ENV_PATH="${CONDA_ENV_PATH:-/nfs/production/mfreeberg/g2p/src/miniforge3/envs/g2p-llm}"
 PUBMED_DOWNLOAD_DIR="${PUBMED_DOWNLOAD_DIR:-${WORK_DIR}/download}"
 PUBMED_PARQUET_DIR="${PUBMED_PARQUET_DIR:-${WORK_DIR}/download/parquet_download_files}"
 # Optional: only download PubMed files whose remote Last-Modified date is on or after YYYY-MM-DD.
@@ -84,6 +86,8 @@ SLURM_GPU_GRES="${SLURM_GPU_GRES:-gpu:a100:1}"
 
 ANNOTATE_PUBMED_DIR="$(abspath_existing "${ANNOTATE_PUBMED_DIR}")"
 WORK_DIR="$(abspath_existing "${WORK_DIR}")"
+CONDA_SH="$(abspath_existing "${CONDA_SH}")"
+CONDA_ENV_PATH="$(abspath_existing "${CONDA_ENV_PATH}")"
 PUBMED_DOWNLOAD_DIR="$(abspath_existing "${PUBMED_DOWNLOAD_DIR}")"
 PUBMED_PARQUET_DIR="$(abspath_existing "${PUBMED_PARQUET_DIR}")"
 BERT_PROCESSED_DIR="$(abspath_existing "${BERT_PROCESSED_DIR}")"
@@ -105,7 +109,7 @@ mkdir -p "${LOG_DIR}"
 mkdir -p "${VLLM_CACHE_ROOT}"
 mkdir -p "${TRITON_CACHE_DIR}"
 
-export ANNOTATE_PUBMED_DIR PUBMED_DOWNLOAD_DIR PUBMED_PARQUET_DIR SINCE_DATE SELECT_YEAR
+export ANNOTATE_PUBMED_DIR CONDA_SH CONDA_ENV_PATH PUBMED_DOWNLOAD_DIR PUBMED_PARQUET_DIR SINCE_DATE SELECT_YEAR
 export BERT_PROCESSED_DIR BERT_POSITIVES_PATH CROSSENCODED_DIR LLM_OUT_DIR FINAL_OUT_CSV
 export BERT_MODEL_DIR CROSSENCODER_MODEL_DIR LLM_MODEL_DIR G2P_CSV GENE2PUBTATOR3
 export LLM_BATCH_SIZE LLM_MAX_TOKENS LLM_TEMPERATURE LLM_TOP_P LLM_MAX_MODEL_LEN TOP_K SCORE_CUTOFF

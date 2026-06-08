@@ -2,6 +2,8 @@
 set -euo pipefail
 
 : "${ANNOTATE_PUBMED_DIR:?ANNOTATE_PUBMED_DIR is required}"
+: "${CONDA_SH:?CONDA_SH is required}"
+: "${CONDA_ENV_PATH:?CONDA_ENV_PATH is required}"
 : "${CROSSENCODED_DIR:?CROSSENCODED_DIR is required}"
 : "${LLM_MODEL_DIR:?LLM_MODEL_DIR is required}"
 : "${LLM_OUT_DIR:?LLM_OUT_DIR is required}"
@@ -12,7 +14,9 @@ set -euo pipefail
 : "${SHARD_INDEX:?SHARD_INDEX is required}"
 : "${NUM_SHARDS:?NUM_SHARDS is required}"
 
-source activate g2p-llm
+source "${CONDA_SH}"
+conda activate "${CONDA_ENV_PATH}"
+export PATH="${CONDA_PREFIX}/bin:$PATH"
 
 llm_args=(
   --shards_dir "${CROSSENCODED_DIR}"
