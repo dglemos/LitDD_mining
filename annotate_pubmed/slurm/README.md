@@ -21,6 +21,8 @@ Open `annotate_pubmed/slurm/run_pipeline_slurm.sh` and set:
   by `bert_predict.py`
 - `LLM_MODEL_DIR` to the vLLM model identifier or local model path you want to use
 - Optional `LLM_MAX_MODEL_LEN` to pass `--max_model_len` through to `llm_map.py`
+- Optional `VLLM_CACHE_ROOT` and `TRITON_CACHE_DIR` for the `llm_map.py` vLLM
+  cache locations
 - Optional `SLURM_ACCOUNT`, plus memory, time, and GPU resource settings
 - `SLURM_GPU_GRES` as the full GPU gres string for your cluster, for example
   `gpu:a100:1`
@@ -39,6 +41,8 @@ Default data/output paths are built from `WORK_DIR`, including:
 - `BERT_PROCESSED_DIR=${WORK_DIR}/bert_processed`
 - `CROSSENCODED_DIR=${WORK_DIR}/crossencoded_shards`
 - `LLM_OUT_DIR=${WORK_DIR}/llm_outputs`
+- `VLLM_CACHE_ROOT=${WORK_DIR}/cache`
+- `TRITON_CACHE_DIR=${WORK_DIR}/cache/triton_cache`
 
 ## 2) Submit the pipeline
 
