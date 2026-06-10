@@ -37,8 +37,8 @@ SINCE_DATE="${SINCE_DATE:-}"
 SELECT_YEAR="${SELECT_YEAR:-}"
 BERT_PROCESSED_DIR="${BERT_PROCESSED_DIR:-${WORK_DIR}/bert_processed}"
 BERT_POSITIVES_PATH="${BERT_POSITIVES_PATH:-${WORK_DIR}/pubmed_bert_positive.parquet}"
-CROSSENCODED_DIR="${CROSSENCODED_DIR:-${WORK_DIR}/crossencoded_shards}"
-LLM_OUT_DIR="${LLM_OUT_DIR:-${WORK_DIR}/llm_outputs}"
+CROSSENCODED_DIR="${CROSSENCODED_DIR:-${WORK_DIR}/crossencoder}"
+LLM_OUT_DIR="${LLM_OUT_DIR:-${WORK_DIR}/llm_map}"
 FINAL_OUT_CSV="${FINAL_OUT_CSV:-${FINAL_OUT_PATH:-${WORK_DIR}/final_tiab_mappings.csv}}"
 
 # Models / inputs
