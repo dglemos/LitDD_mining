@@ -39,7 +39,7 @@ def build_llm_prompt(tiab, candidate_structs):
         You will receive:
         - A TIAB
         - Up to 5 candidate LGMDE threads, provided as structured fields:
-          G2P_ID, GENE, DISEASE, ALLELIC_REQUIREMENT, INHERITANCE, MECHANISM, EVIDENCE, VARIANT_TYPES, MOLECULAR_MECHANISM
+          G2P_ID, GENE, DISEASE, ALLELIC_REQUIREMENT, MOLECULAR_MECHANISM
 
         Goal:
         Select the best matching G2P ID(s) from the provided candidates, or return NO MATCH if none meet the required criteria.
@@ -99,7 +99,7 @@ def build_llm_prompt(tiab, candidate_structs):
         Return exactly one G2P ID if only one candidate clearly ranks highest based on the scoring rules above.
 
         2) Multiple candidates:
-        Return multiple G2P IDs (semicolon-separated) only if the TIAB clearly describes multiple distinct gene–disease associations that independently match separate candidates.
+        Return multiple G2P IDs (semicolon-separated) only if the TIAB clearly describes multiple distinct gene-disease associations that independently match separate candidates.
 
         3) No match:
         Return NO MATCH ONLY if:
@@ -241,10 +241,7 @@ def format_candidate_structs(labels):
             f"GENE: {data.get('GENE', '')} | "
             f"DISEASE: {data.get('DISEASE', '')} | "
             f"ALLELIC_REQUIREMENT: {data.get('ALLELIC_REQUIREMENT', '')} | "
-            f"INHERITANCE: {data.get('CROSS_CUTTING_MODIFIER', '')} | "
-            f"MECHANISM: {data.get('MOLECULAR_MECHANISM', '')} | "
-            f"EVIDENCE: {data.get('CONFIDENCE', '')} | "
-            f"VARIANT_TYPES: {data.get('VARIANT_TYPES', '')}"
+            f"MOLECULAR_MECHANISM: {data.get('MOLECULAR_MECHANISM', '')}"
         )
         structs.append(line)
     return structs
