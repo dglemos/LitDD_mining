@@ -37,10 +37,10 @@ from urllib.request import urlopen
 import xml.etree.ElementTree as ET
 
 import pyarrow.parquet as pq
-from google.oauth2 import service_account
 from pydantic import BaseModel
 
 try:
+    from google.oauth2 import service_account
     from google import genai
     from google.genai.types import HttpOptions
 except ModuleNotFoundError:
