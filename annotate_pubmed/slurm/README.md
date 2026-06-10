@@ -41,8 +41,8 @@ Default data/output paths are built from `WORK_DIR`, including:
 - raw PubMed XML files in `${WORK_DIR}/download/raw_download_files`
 - `PUBMED_PARQUET_DIR=${WORK_DIR}/download/parquet_download_files`
 - `BERT_PROCESSED_DIR=${WORK_DIR}/bert_processed`
-- `CROSSENCODED_DIR=${WORK_DIR}/crossencoded_shards`
-- `LLM_OUT_DIR=${WORK_DIR}/llm_outputs`
+- `CROSSENCODED_DIR=${WORK_DIR}/crossencoder`
+- `LLM_OUT_DIR=${WORK_DIR}/llm_map`
 - `VLLM_CACHE_ROOT=${WORK_DIR}/cache`
 - `TRITON_CACHE_DIR=${WORK_DIR}/cache/triton_cache`
 
