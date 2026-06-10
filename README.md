@@ -57,7 +57,7 @@ python annotate_pubmed/download_pubmed.py \
   --home_dir <path_to_pubmed_download_dir> \
   --output_dir <path_to_pubmed_parquet_dir>
 ```
-Outputs to `path_to_pubmed_download_dir/raw_download_files`.
+Outputs raw XML files to `<path_to_pubmed_download_dir>/raw_download_files`.
 
 Parquet files are written to `<path_to_pubmed_parquet_dir>`.
 
@@ -68,7 +68,7 @@ python annotate_pubmed/bert_predict.py --input_dir <path_to_pubmed_parquet_dir> 
 --bert_model <path_to_bert_model> \
 --select_year <year>
 ```
-Outputs to `bert_processed_dir`
+Outputs to `<bert_processed_dir>`.
 
 ### 3) Build positives parquet
 ```bash
@@ -76,7 +76,7 @@ python annotate_pubmed/build_bert_positives.py \
   --processed_dir <bert_processed_dir> \
   --out_path pubmed_bert_positive.parquet
 ```
-Outputs to file `pubmed_bert_positive.parquet`
+Outputs to `pubmed_bert_positive.parquet`.
 
 ### 4) Cross-encode against G2P
 ```bash
@@ -84,28 +84,31 @@ python annotate_pubmed/crossencode.py \
   --input_parquet pubmed_bert_positive.parquet \
   --g2p_csv <path_to_ddg2p.csv> \
   --model_path <path_to_litdd_crossencoder> \
-  --out_dir <path_to_crossencoded_shards> \
+  --out_dir <path_to_crossencoder_dir> \
   --device cuda:0
 ```
 
-### 6) LLM mapping
+Outputs to `<path_to_crossencoder_dir>`.
+
+### 5) LLM mapping
 Rows are pre-filtered before LLM mapping by the cross-encoder score in `top5_cross`
 (current cutoff: 0.01).
 
-#### Option 1: open source
 ```bash
 python annotate_pubmed/llm_map.py \
-  --shards_dir <path_to_crossencoded_shards> \
+  --shards_dir <path_to_crossencoder_dir> \
   --llm_model <path_to_llm> \
-  --out_dir <path_to_output_dir> \
+  --out_dir <path_to_llm_map_dir> \
   --batch_size 32 --max_tokens 256 \
   --temperature 0.0 --top_p 1.0
 ```
 
-### 7) Final cleaning and enrichment
+Outputs to `<path_to_llm_map_dir>`.
+
+### 6) Final cleaning and enrichment
 There are two requirements to run the final script:
-- G2P csv file
-- download gene2pubtator3 from https://ftp.ncbi.nlm.nih.gov/pub/lu/PubTator3/
+- G2P CSV file
+- `gene2pubtator3` downloaded from NCBI PubTator3
 
 ```bash
 python annotate_pubmed/final_data_clean_v2.py \

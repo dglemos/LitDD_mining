@@ -7,6 +7,7 @@ from glob import glob
 import os
 from pathlib import Path
 import subprocess
+import sys
 import traceback
 from lxml import html
 import pandas as pd
@@ -46,6 +47,7 @@ def get_remote_file_date(file_url):
 
 def download_files(download_dir, file_links, since_date=None):
     """ Download each file from a list of file URLs """
+    failed_downloads = []
     for file_url in file_links:
         file_name = file_url.split('/')[-1]
         local_path = os.path.join(download_dir, file_name)
@@ -65,6 +67,9 @@ def download_files(download_dir, file_links, since_date=None):
             result = subprocess.call(['wget', '-P', download_dir, file_url])
             if result != 0:
                 print(f"Download failed with exit code {result}: {file_url}")
+                failed_downloads.append(file_url)
+
+    return failed_downloads
 
 
 def process_file_to_parquet(xml_file, output_directory):
@@ -73,7 +78,7 @@ def process_file_to_parquet(xml_file, output_directory):
 
     if os.path.exists(output_file):
         print(f"Skipping {xml_file}, as {output_file} already exists.")
-        return
+        return True
 
     print(f"Processing {xml_file}")
     try:
@@ -84,12 +89,14 @@ def process_file_to_parquet(xml_file, output_directory):
         df["pubdate"] = pd.to_numeric(pub_year, errors="coerce")
         df.to_parquet(output_file, engine="pyarrow", index=False)
         print(f"Saved {output_file}")
+        return True
     except Exception as exc:
         error_info = str(exc) + "\n" + traceback.format_exc()
         error_path = os.path.join(output_directory, f"BAD_DOWNLOAD_{base_name}.txt")
         with open(error_path, "w") as handle:
             handle.write(error_info)
         print(f"Error processing {xml_file}, logged to {error_path}")
+        return False
 
 
 def get_xml_files(directory):
@@ -98,9 +105,12 @@ def get_xml_files(directory):
 
 
 def convert_downloads_to_parquet(download_dir, output_dir):
-    os.makedirs(output_dir, exist_ok=True)
+    failed_conversions = []
     for xml_file in get_xml_files(download_dir):
-        process_file_to_parquet(xml_file, output_dir)
+        if not process_file_to_parquet(xml_file, output_dir):
+            failed_conversions.append(xml_file)
+
+    return failed_conversions
 
 
 def main():
@@ -128,11 +138,20 @@ def main():
     else:
         all_files = baseline_files + update_files
 
-    download_files(download_dir, all_files, since_date=args.since_date)
+    failed_downloads = download_files(download_dir, all_files, since_date=args.since_date)
+    failed_conversions = []
 
     if args.convert_to_parquet:
         output_dir = args.output_dir or os.path.join(args.home_dir, "parquet_download_files")
-        convert_downloads_to_parquet(download_dir, str(output_dir))
+        os.makedirs(output_dir, exist_ok=True)
+        failed_conversions = convert_downloads_to_parquet(download_dir, str(output_dir))
+
+    if failed_downloads or failed_conversions:
+        if failed_downloads:
+            print(f"Encountered {len(failed_downloads)} failed download(s).", file=sys.stderr)
+        if failed_conversions:
+            print(f"Encountered {len(failed_conversions)} failed parquet conversion(s).", file=sys.stderr)
+        raise SystemExit(1)
 
 if __name__ == "__main__":
     main()
