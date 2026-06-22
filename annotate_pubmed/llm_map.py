@@ -39,77 +39,27 @@ def build_llm_prompt(tiab, candidate_structs):
         You will receive:
         - A TIAB
         - Up to 5 candidate LGMDE threads, provided as structured fields:
-          G2P_ID, GENE, DISEASE, ALLELIC_REQUIREMENT, MOLECULAR_MECHANISM
+          G2P_ID, GENE, DISEASE, ALLELIC_REQUIREMENT, MECHANISM
 
-        Goal:
-        Select the best matching G2P ID(s) from the provided candidates, or return NO MATCH if none meet the required criteria.
+        Task:
+        Determine whether the TIAB supports any of the candidate G2P records.
 
         You must follow all rules below. Do not invent any G2P IDs. Only select from the 5 provided candidates.
 
-        HARD FILTERING RULES (mandatory)
-        A candidate (and the overall TIAB) MUST satisfy ALL of the following or it is ineligible:
+        How to decide:
+        - A candidate is supported only if the TIAB matches the candidate gene and the candidate disease.
+        - Gene match and disease match are the primary criteria.
+        - Disease match can be based on the same disease name, a clear synonym, or a clearly matching phenotype description.
+        - Use ALLELIC_REQUIREMENT only when the TIAB provides inheritance or zygosity information.
+        - Use MECHANISM only when the TIAB provides molecular mechanism information.
+        - Do not reject a candidate only because ALLELIC_REQUIREMENT or MECHANISM is not mentioned in the TIAB.
 
-        1) Gene overlap (mandatory)
-        - The TIAB must explicitly mention at least one gene symbol (or alias) that exactly matches a GENE field in a candidate.
-        - If no candidate shares a gene with the TIAB, return NO MATCH.
+        Selection:
+        - Return one G2P ID if one candidate is clearly supported.
+        - Return multiple G2P IDs only if the TIAB clearly describes multiple distinct gene-disease matches.
+        - Return NO MATCH if none of the candidates are supported by the TIAB.
 
-        2) Human evidence (mandatory)
-        - The TIAB must include human subjects or explicit human diagnostic findings (for example: case reports, patient cohorts, family studies).
-        - If the TIAB contains only non-human models (animal models, cell lines, in vitro) with no human patients, return NO MATCH.
-
-        3) Disease type (mandatory)
-        - The TIAB must describe germline or inherited disease.
-        - If the TIAB describes only somatic variation (for example tumor sequencing, cancer-only studies) with no inherited or syndromic context, return NO MATCH.
-
-        4) Study type exclusion
-        - If the TIAB is explicitly a GWAS, polymorphism association study, or common-variant risk study without rare pathogenic variant interpretation, return NO MATCH.
-
-        5) Negation exclusion
-        - If the TIAB explicitly states that variants in a gene do NOT cause a disease, that candidate is ineligible.
-
-        INFORMATION EXTRACTION (for ranking only)
-        From the TIAB, identify when present:
-        - Mentioned gene(s)
-        - Disease name(s) and synonyms
-        - Key phenotypes and affected systems
-        - Inheritance or allelic clues (dominant, recessive, X-linked, biallelic, heterozygous, de novo, consanguinity)
-        - Whether findings are emphasized in the title or opening sentence
-
-        CANDIDATE SCORING AND RANKING
-        For candidates that pass HARD FILTERING:
-        Score using the following priorities (highest to lowest):
-        1) Gene match (required for all candidates)
-
-        2) Allelic requirement compatibility
-        - If the TIAB explicitly states inheritance or zygosity, it must be compatible with the candidate.
-        - If inheritance or zygosity is NOT stated, do NOT reject candidates based on allelic requirement alone.
-
-        3) Disease name or clear synonym match
-        - Strong positive evidence when present.
-
-        4) Phenotype overlap
-        - Hallmark or system-level phenotype overlap is positive evidence.
-        - Partial matches are acceptable.
-
-        Important:
-        - If gene and allelic requirement clearly match but phenotype or disease naming differs, prefer the gene + allelic match. This may reflect differences in disease labeling rather than biology.
-
-        SELECTION RULES
-        1) Single best candidate:
-        Return exactly one G2P ID if only one candidate clearly ranks highest based on the scoring rules above.
-
-        2) Multiple candidates:
-        Return multiple G2P IDs (semicolon-separated) only if the TIAB clearly describes multiple distinct gene-disease associations that independently match separate candidates.
-
-        3) No match:
-        Return NO MATCH ONLY if:
-        - No candidate passes gene overlap filtering, or
-        - The TIAB is non-human only, or
-        - All candidates fail mandatory compatibility (for example: explicit dominant inheritance in TIAB versus strictly biallelic candidate).
-
-        Do NOT force a match if all candidates are incompatible.
-
-        OUTPUT FORMAT (STRICT)
+        Output:
         Return exactly one line and nothing else:
         ANSWER: G2PID
         or
