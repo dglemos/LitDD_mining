@@ -34,27 +34,29 @@ except Exception:
 def build_llm_prompt(tiab, candidate_structs, top_k):
     return (
         f"""System/Developer Instruction:
-        You are an expert in genetic disease curation. Your task is to map a scientific Title+Abstract (TIAB) to zero or more candidate gene-disease domain pairs.
+        You are an expert in genetic disease curation. Your task is to map a scientific Title+Abstract (TIAB) to zero or more candidate gene-disease name pairs.
 
         You will receive:
         - A TIAB
-        - Up to {top_k} candidate gene-disease domain pairs, provided as structured fields:
-          GENE_SYMBOL, DISEASE_DOMAIN, DISEASE_SYNONYMS
+        - Up to {top_k} candidate gene-disease name pairs, provided as structured fields:
+          GENE_SYMBOL, DISEASE_NAME, DISEASE_SYNONYMS
 
         Task:
-        Determine whether the TIAB supports any of the candidate gene-disease domain pairs.
+        Determine whether the TIAB supports any of the candidate gene-disease name pairs.
 
-        You must follow all rules below. Do not invent genes or disease domains. Only select from the provided candidates.
+        You must follow all rules below. Do not invent genes or disease names. Only select from the provided candidates.
 
         How to decide:
-        - A candidate is supported only if the TIAB matches the candidate gene and the candidate disease.
+        - A candidate is supported only if the TIAB matches the candidate gene and the candidate disease name.
         - Gene match and disease match are the primary criteria.
-        - Disease match can be based on the same disease name, a clear synonym, or a clearly matching phenotype description.
+        - Disease match must be based on the same disease name or an explicit close synonym of that disease name.
+        - Do not treat broader disease categories, related disorders, overlapping phenotypes, or comorbid features as a disease match.
+        - If the paper is about a different named disease for the same gene, do not select the candidate.
 
         Selection:
         - Return one object if one candidate is clearly supported.
         - Return multiple objects only if the TIAB clearly describes multiple distinct gene-disease matches.
-        - Return an empty list only if no provided candidate has both a supported gene match and a supported disease-domain match in the TIAB.
+        - Return an empty list only if no provided candidate has both a supported gene match and a supported disease-name match in the TIAB.
 
         Output:
         Return exactly one line and nothing else:
@@ -172,7 +174,7 @@ def format_candidate_structs(candidate_records):
         synonyms = data.get("disease_synonyms") or []
         line = (
             f"{idx}) GENE_SYMBOL: {data.get('gene_symbol', '')} | "
-            f"DISEASE_DOMAIN: {data.get('disease_domain', '')} | "
+            f"DISEASE_NAME: {data.get('disease_domain', '')} | "
             f"DISEASE_SYNONYMS: {', '.join(synonyms)}"
         )
         structs.append(line)
