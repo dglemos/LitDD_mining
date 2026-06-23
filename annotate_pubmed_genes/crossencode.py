@@ -12,9 +12,10 @@ across multiple processes.
 import os
 import gc
 import argparse
+import gzip
 from pathlib import Path
 import traceback
-from typing import List, Tuple, Optional, Dict, Any
+from typing import List, Tuple, Optional, Dict, Any, Set
 import heapq
 
 import torch
@@ -26,6 +27,10 @@ import pandas as pd
 
 PARQUET_COMPRESSION = "zstd"
 SKIP_IF_EXISTS = True
+
+
+def normalize_gene_symbol(value: Any) -> str:
+    return str(value).strip().upper()
 
 
 def get_device(device_str: Optional[str] = None) -> str:
@@ -112,6 +117,30 @@ def detect_sep(candidate_path: str) -> str:
 
 
 def build_candidate_records(candidate_path: str) -> List[Dict[str, Any]]:
+    """
+    Load and normalize grouped candidate gene/disease records from a delimited file.
+
+    Supported input formats are:
+    - `.csv`: comma-delimited text
+    - `.tsv` or `.tab`: tab-delimited text
+    - `.txt`: plain text with the delimiter auto-detected from the first non-empty
+      line; the file must be either comma-delimited or tab-delimited
+
+    The input file must include these columns:
+    `gene_symbol`, `disease_domain`, and `disease_synonym`.
+
+    Rows are grouped by (`gene_symbol`, `disease_domain`), and non-empty
+    `disease_synonym` values are collected into `disease_synonyms`.
+
+    Example supported file content:
+
+    ```csv
+    gene_symbol,disease_domain,disease_synonym
+    BRCA1,Breast cancer,hereditary breast ovarian cancer
+    BRCA1,Breast cancer,familial breast cancer
+    CFTR,Cystic fibrosis,mucoviscidosis
+    ```
+    """
     candidate_pd = pd.read_csv(
         candidate_path,
         sep=detect_sep(candidate_path),
@@ -128,7 +157,10 @@ def build_candidate_records(candidate_path: str) -> List[Dict[str, Any]]:
         raise ValueError(f"Input candidate file missing required columns: {missing_cols}")
 
     candidates = candidates.with_columns(
-        pl.col("gene_symbol").cast(pl.Utf8, strict=False).str.strip_chars(),
+        pl.col("gene_symbol")
+        .cast(pl.Utf8, strict=False)
+        .str.strip_chars()
+        .str.to_uppercase(),
         pl.col("disease_domain").cast(pl.Utf8, strict=False).str.strip_chars(),
         pl.col("disease_synonym").cast(pl.Utf8, strict=False).str.strip_chars(),
     )
@@ -164,6 +196,25 @@ def build_candidate_records(candidate_path: str) -> List[Dict[str, Any]]:
         )
 
     return records
+
+
+def load_gene_symbols_by_pmid(gene2pubtator_path: str) -> Dict[str, Set[str]]:
+    if not str(gene2pubtator_path).endswith(".gz"):
+        raise ValueError("gene2pubtator must be a gzip-compressed .gz file")
+
+    gene_symbols_by_pmid: Dict[str, Set[str]] = {}
+    with gzip.open(gene2pubtator_path, "rt", encoding="utf-8") as handle:
+        for line in handle:
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) < 4:
+                continue
+
+            pmid = str(parts[0]).strip()
+            gene_symbol = normalize_gene_symbol(parts[3])
+            if pmid and gene_symbol:
+                gene_symbols_by_pmid.setdefault(pmid, set()).add(gene_symbol)
+
+    return gene_symbols_by_pmid
 
 
 def load_shard_df(input_parquet: str, shard: int, num_shards: int) -> pl.DataFrame:
@@ -282,9 +333,55 @@ def crossencode_topk_for_chunk(
     return topk_lists
 
 
+def crossencode_topk_for_publications(
+    model: CrossEncoder,
+    pmids: List[str],
+    chunk_texts: List[str],
+    candidate_records_by_gene_symbol: Dict[str, List[Dict[str, Any]]],
+    gene_symbols_by_pmid: Dict[str, Set[str]],
+    top_k: int = 5,
+    pair_batch_size: int = 512,
+    g_block_size: int = 2000,
+) -> List[List[Dict[str, Any]]]:
+    topk_lists: List[List[Dict[str, Any]]] = []
+
+    for pmid, chunk_text in zip(pmids, chunk_texts):
+        overlapping_gene_symbols = gene_symbols_by_pmid.get(pmid, set())
+        if not overlapping_gene_symbols:
+            topk_lists.append([])
+            continue
+
+        filtered_candidates: List[Dict[str, Any]] = []
+        seen_candidate_keys: Set[Tuple[str, str]] = set()
+        for gene_symbol in overlapping_gene_symbols:
+            for record in candidate_records_by_gene_symbol.get(gene_symbol, []):
+                candidate_key = (record["gene_symbol"], record["disease_domain"])
+                if candidate_key in seen_candidate_keys:
+                    continue
+                seen_candidate_keys.add(candidate_key)
+                filtered_candidates.append(record)
+
+        if not filtered_candidates:
+            topk_lists.append([])
+            continue
+
+        publication_topk = crossencode_topk_for_chunk(
+            model=model,
+            chunk_texts=[chunk_text],
+            candidate_records=filtered_candidates,
+            top_k=top_k,
+            pair_batch_size=pair_batch_size,
+            g_block_size=g_block_size,
+        )
+        topk_lists.append(publication_topk[0] if publication_topk else [])
+
+    return topk_lists
+
+
 def process_shard(
     input_parquet: str,
     candidate_file: str,
+    gene2pubtator: str,
     out_dir: str,
     model_path: str,
     device: Optional[str] = None,
@@ -335,6 +432,19 @@ def process_shard(
         return False
 
     print(f"[INFO] Grouped candidate entries (M): {len(candidate_records)}")
+    candidate_records_by_gene_symbol: Dict[str, List[Dict[str, Any]]] = {}
+    for record in candidate_records:
+        candidate_records_by_gene_symbol.setdefault(record["gene_symbol"], []).append(record)
+
+    try:
+        print(f"[INFO] Loading gene-to-PMID mappings from: {gene2pubtator}")
+        gene_symbols_by_pmid = load_gene_symbols_by_pmid(gene2pubtator)
+    except Exception:
+        print(f"[ERROR] Failed to load gene-to-PMID mappings: {gene2pubtator}")
+        traceback.print_exc()
+        return False
+
+    print(f"[INFO] PMIDs with PubTator gene mappings: {len(gene_symbols_by_pmid)}")
 
     # Load shard of the input parquet
     try:
@@ -353,7 +463,11 @@ def process_shard(
     if "tiab" not in df_shard.columns:
         print("[ERROR] Input parquet must contain a 'tiab' column.")
         return False
+    if "pmid" not in df_shard.columns:
+        print("[ERROR] Input parquet must contain a 'pmid' column.")
+        return False
 
+    pmid_list = [str(pmid).strip() for pmid in df_shard.get_column("pmid").fill_null("").to_list()]
     tiab_list = df_shard.get_column("tiab").fill_null("").to_list()
     N = len(tiab_list)
     print(f"[INFO] Shard rows (N_shard): {N}")
@@ -370,28 +484,33 @@ def process_shard(
 
     # Compute top-k per row in chunks
     all_topk: List[Optional[List[Dict[str, Any]]]] = [None] * N
+    keep_row_mask: List[bool] = [False] * N
 
     try:
         total_chunks = (N + chunk_size - 1) // chunk_size
         for ci, chunk_start in enumerate(range(0, N, chunk_size), start=1):
             chunk_end = min(chunk_start + chunk_size, N)
             print(f"[INFO] Processing chunk {ci}/{total_chunks}: rows {chunk_start}:{chunk_end}")
+            chunk_pmids = pmid_list[chunk_start:chunk_end]
             chunk_texts = tiab_list[chunk_start:chunk_end]
 
-            topk_chunk = crossencode_topk_for_chunk(
+            topk_chunk = crossencode_topk_for_publications(
                 model=model,
+                pmids=chunk_pmids,
                 chunk_texts=chunk_texts,
-                candidate_records=candidate_records,
+                candidate_records_by_gene_symbol=candidate_records_by_gene_symbol,
+                gene_symbols_by_pmid=gene_symbols_by_pmid,
                 top_k=top_k,
                 pair_batch_size=pair_batch_size,
                 g_block_size=g_block_size,
             )
 
             all_topk[chunk_start:chunk_end] = topk_chunk
+            keep_row_mask[chunk_start:chunk_end] = [len(matches) > 0 for matches in topk_chunk]
             print(f"[INFO] Finished chunk {ci}/{total_chunks}")
 
             # Clean up per-chunk only (avoid doing this in inner loops)
-            del chunk_texts, topk_chunk
+            del chunk_pmids, chunk_texts, topk_chunk
             if device_str.startswith("cuda") and (ci % 10 == 0):
                 torch.cuda.empty_cache()
             # gc.collect() only if you actually observe host RAM creep; keep it light:
@@ -417,7 +536,7 @@ def process_shard(
         print(f"[INFO] Writing output to: {out_path}")
         df_out = df_shard.with_columns(
             pl.Series(name="top_matches", values=all_topk, dtype=topk_dtype)
-        )
+        ).filter(pl.Series(name="keep_row", values=keep_row_mask))
         df_out.write_parquet(out_path, compression=compression)
         print(f"[INFO] Wrote {df_out.height} rows to {out_path}")
     except Exception:
@@ -442,6 +561,12 @@ def main():
         required=True,
         help="Path to CSV/TSV with columns: gene_symbol, disease_domain, disease_synonym",
     )
+    ap.add_argument(
+        "--gene2pubtator",
+        type=Path,
+        required=True,
+        help="Path to gzip-compressed PubTator gene mapping file (.gz) used to filter candidates by PMID gene overlap",
+    )
     ap.add_argument("--out_dir", type=Path, required=True, help="Output directory for shard parquets")
     ap.add_argument("--model_path", type=str, required=True, help="CrossEncoder model path")
     ap.add_argument("--device", type=str, default=None, help="Device string, e.g., cuda:0, cuda:1")
@@ -461,6 +586,7 @@ def main():
     ok = process_shard(
         input_parquet=args.input_parquet,
         candidate_file=args.candidate_file,
+        gene2pubtator=args.gene2pubtator,
         out_dir=args.out_dir,
         model_path=args.model_path,
         device=args.device,
