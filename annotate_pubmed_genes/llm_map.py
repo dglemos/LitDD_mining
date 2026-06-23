@@ -60,9 +60,9 @@ def build_llm_prompt(tiab, candidate_structs, top_k):
         Return exactly one line and nothing else:
         ANSWER: []
         or
-        ANSWER: [{"gene_symbol":"GENE","disease_domain":"DOMAIN"}]
+        ANSWER: [{{"gene_symbol":"GENE","disease_domain":"DOMAIN"}}]
         or
-        ANSWER: [{"gene_symbol":"GENE1","disease_domain":"DOMAIN1"},{"gene_symbol":"GENE2","disease_domain":"DOMAIN2"}]
+        ANSWER: [{{"gene_symbol":"GENE1","disease_domain":"DOMAIN1"}},{{"gene_symbol":"GENE2","disease_domain":"DOMAIN2"}}]
 
     TIAB:
     {tiab}
