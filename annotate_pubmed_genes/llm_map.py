@@ -105,6 +105,21 @@ def extract_score(item):
     return np.nan
 
 
+def normalize_sequence(value):
+    if value is None:
+        return []
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    try:
+        if pa is not None and isinstance(value, pa.Scalar):
+            return normalize_sequence(value.as_py())
+    except Exception:
+        pass
+    return [value]
+
+
 def to_candidate_records(x, top_k):
     if x is None or (isinstance(x, float) and pd.isna(x)):
         return []
@@ -120,7 +135,7 @@ def to_candidate_records(x, top_k):
                         "disease_domain": str(record.get("disease_domain", "")).strip(),
                         "disease_synonyms": [
                             str(s).strip()
-                            for s in (record.get("disease_synonyms") or [])
+                            for s in normalize_sequence(record.get("disease_synonyms"))
                             if str(s).strip()
                         ],
                         "match_text": str(record.get("match_text", "")).strip(),
